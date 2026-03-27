@@ -21,7 +21,7 @@ profile = "rpi_csi_jpeg"
 camera_id = "optical-front"
 width = 1280
 height = 720
-frame_interval_ms = 250
+frame_interval_ms = 500
 
 [thermal]
 enabled = true

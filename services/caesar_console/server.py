@@ -56,7 +56,7 @@ class CaesarConsoleHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/stats":
             stats = build_stats(
                 read_latest(self.latest_path),
-                read_jsonl_tail(self.high_interest_path, 250),
+                read_jsonl_tail(self.high_interest_path, 500),
                 read_json(self.node_registry_path),
             )
             return self.write_json(stats)
