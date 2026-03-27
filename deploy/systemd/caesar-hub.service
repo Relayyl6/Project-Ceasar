@@ -1,0 +1,14 @@
+[Unit]
+Description=Caesar Hub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/uriel-caesar
+ExecStart=/usr/bin/cargo run -p caesar-hub -- --config configs/hub-dev.toml serve
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

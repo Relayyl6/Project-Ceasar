@@ -1,0 +1,6 @@
+listen_addr = "127.0.0.1:7878"
+trusted_public_keys = ["3ccd241cffc9b3618044b97d036d8614593d8b017c340f1dee8773385517654b", "b041dbc74b2ef4fef39210b016bd7dda362784daef72f613d1763062aa06f781", "23ac0770a1060241604a8e60a47166e3e5b4034d4ee321dbe19b342e85b21544"]
+[storage]
+journal_path = "output/caesar/journal.jsonl"
+latest_path = "output/caesar/latest_tracks.json"
+high_interest_path = "output/caesar/high_interest.jsonl"

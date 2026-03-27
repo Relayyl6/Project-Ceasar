@@ -1,0 +1,40 @@
+{
+  "cluster_id": "bwari-mesh-alpha",
+  "region": "Bwari",
+  "aggregation_interval_s": 15,
+  "federated_strategy": "fedpdm-style",
+  "nodes": [
+    {
+      "node_id": "tower-bwari-alpha",
+      "role": "fixed_tower",
+      "zone": "north-ridge",
+      "protocols": ["dds", "zenoh", "mqtt"],
+      "learning_layers": ["sl", "usl"],
+      "capabilities": ["optical", "thermal", "radar"]
+    },
+    {
+      "node_id": "tower-bwari-bravo",
+      "role": "fixed_tower",
+      "zone": "south-ridge",
+      "protocols": ["dds", "zenoh", "amqp"],
+      "learning_layers": ["sl", "usl"],
+      "capabilities": ["optical", "thermal", "radar"]
+    },
+    {
+      "node_id": "drone-relay-01",
+      "role": "relay",
+      "zone": "airborne-heal",
+      "protocols": ["dds", "zenoh"],
+      "learning_layers": ["rl"],
+      "capabilities": ["optical", "mesh-relay"]
+    },
+    {
+      "node_id": "hub-bwari-01",
+      "role": "regional_hub",
+      "zone": "aggregation-core",
+      "protocols": ["dds", "zenoh", "mqtt", "amqp"],
+      "learning_layers": ["sl", "usl", "rl"],
+      "capabilities": ["aggregation", "orchestration", "governance"]
+    }
+  ]
+}

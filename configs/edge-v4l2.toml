@@ -1,0 +1,50 @@
+node_id = "tower-v4l2-lab"
+publish_topic = "caesar_tactical_intel"
+loop_count = 0
+fusion_window_ms = 650
+threat_threshold = 0.70
+ed25519_seed_hex = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+
+[location]
+site = "Lab"
+latitude = 37.7749
+longitude = -122.4194
+
+[uplink]
+mode = "tcp_jsonl"
+tcp_addr = "127.0.0.1:7878"
+
+[optical]
+enabled = true
+mode = "profile_stdout"
+profile = "arducam_v4l2_ffmpeg"
+camera_id = "arducam-front"
+width = 1280
+height = 720
+frame_interval_ms = 400
+device = "/dev/video0"
+pixel_format = "mjpeg"
+
+[thermal]
+enabled = true
+mode = "command_json"
+camera_id = "thermal-front"
+width = 640
+height = 512
+frame_interval_ms = 600
+command_program = "python3"
+command_args = ["scripts/thermal_adapter.py", "--mode", "synthetic", "--width", "640", "--height", "512"]
+
+[radar]
+enabled = true
+mode = "command_json"
+radar_id = "mmwave-front"
+point_count = 48
+frame_interval_ms = 550
+command_program = "python3"
+command_args = ["scripts/radar_adapter.py", "--mode", "synthetic", "--points", "48"]
+
+[inference]
+mode = "command_json"
+command_program = "python3"
+command_args = ["scripts/onnx_hook.py", "--model", "models/yolov8n.onnx", "--imgsz", "640", "--conf-thres", "0.25", "--iou-thres", "0.45", "--scene-width-m", "80", "--scene-depth-m", "50"]

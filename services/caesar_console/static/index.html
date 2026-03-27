@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Caesar Console</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">Caesar Console</p>
+          <h1>Regional intelligence dashboard</h1>
+          <p class="subtitle">Live view of latest tracks, high-interest alerts, and node activity across the mesh.</p>
+        </div>
+        <button id="refresh">Refresh</button>
+      </section>
+
+      <section class="cards">
+        <article class="card">
+          <span>Latest Tracks</span>
+          <strong id="latestTrackCount">0</strong>
+        </article>
+        <article class="card">
+          <span>Recent High-Interest</span>
+          <strong id="highInterestCount">0</strong>
+        </article>
+        <article class="card">
+          <span>Tracked Nodes</span>
+          <strong id="nodeCount">0</strong>
+        </article>
+        <article class="card">
+          <span>Registered Nodes</span>
+          <strong id="registeredNodeCount">0</strong>
+        </article>
+      </section>
+
+      <section class="panel-grid">
+        <article class="panel">
+          <h2>Threat Distribution</h2>
+          <div id="threatCounts" class="stat-list"></div>
+        </article>
+        <article class="panel">
+          <h2>Node Activity</h2>
+          <div id="nodeCounts" class="stat-list"></div>
+        </article>
+      </section>
+
+      <section class="panel-grid">
+        <article class="panel">
+          <h2>Regional Summary</h2>
+          <div id="regionalSummary" class="stat-list"></div>
+        </article>
+        <article class="panel">
+          <h2>Learning Fabric</h2>
+          <div id="learningSummary" class="stat-list"></div>
+        </article>
+      </section>
+
+      <section class="panel">
+        <h2>Latest Tracks</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Track</th>
+                <th>Node</th>
+                <th>Threat</th>
+                <th>Confidence</th>
+                <th>Modalities</th>
+              </tr>
+            </thead>
+            <tbody id="latestTracks"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Recent High-Interest Alerts</h2>
+        <div id="alerts" class="alerts"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Orchestration Plan</h2>
+        <div id="orchestrationPlan" class="alerts"></div>
+      </section>
+    </main>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

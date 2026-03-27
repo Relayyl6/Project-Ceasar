@@ -1,0 +1,42 @@
+node_id = "drone-relay-01"
+publish_topic = "caesar_tactical_intel"
+loop_count = 0
+fusion_window_ms = 600
+threat_threshold = 0.68
+ed25519_seed_hex = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff"
+
+[location]
+site = "Bwari-Drone-Relay"
+latitude = 9.2754
+longitude = 7.3833
+
+[uplink]
+mode = "tcp_jsonl"
+tcp_addr = "127.0.0.1:7878"
+
+[optical]
+enabled = true
+mode = "synthetic"
+profile = "rpi_csi_jpeg"
+camera_id = "drone-optical-front"
+width = 960
+height = 540
+frame_interval_ms = 300
+
+[thermal]
+enabled = false
+mode = "synthetic"
+camera_id = "drone-thermal-front"
+width = 640
+height = 512
+frame_interval_ms = 500
+
+[radar]
+enabled = false
+mode = "synthetic"
+radar_id = "drone-mmwave-front"
+point_count = 32
+frame_interval_ms = 500
+
+[inference]
+mode = "heuristic"

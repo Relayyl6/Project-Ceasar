@@ -1,0 +1,14 @@
+[Unit]
+Description=Uriel Edge Node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/uriel-caesar
+ExecStart=/usr/bin/cargo run -p uriel-edge-node -- --config configs/edge-pi.toml
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

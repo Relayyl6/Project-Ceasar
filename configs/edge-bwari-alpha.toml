@@ -1,0 +1,42 @@
+node_id = "tower-bwari-alpha"
+publish_topic = "caesar_tactical_intel"
+loop_count = 0
+fusion_window_ms = 700
+threat_threshold = 0.75
+ed25519_seed_hex = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+
+[location]
+site = "Bwari-North-Ridge"
+latitude = 9.2797
+longitude = 7.3781
+
+[uplink]
+mode = "tcp_jsonl"
+tcp_addr = "127.0.0.1:7878"
+
+[optical]
+enabled = true
+mode = "synthetic"
+profile = "rpi_csi_jpeg"
+camera_id = "alpha-optical-front"
+width = 1280
+height = 720
+frame_interval_ms = 250
+
+[thermal]
+enabled = true
+mode = "synthetic"
+camera_id = "alpha-thermal-front"
+width = 640
+height = 512
+frame_interval_ms = 350
+
+[radar]
+enabled = true
+mode = "synthetic"
+radar_id = "alpha-mmwave-front"
+point_count = 48
+frame_interval_ms = 325
+
+[inference]
+mode = "heuristic"

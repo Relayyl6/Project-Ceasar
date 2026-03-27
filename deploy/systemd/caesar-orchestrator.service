@@ -1,0 +1,14 @@
+[Unit]
+Description=Caesar Mesh Orchestrator
+After=network-online.target caesar-hub.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/uriel-caesar
+ExecStart=/usr/bin/python3 services/mesh_orchestrator/orchestrator.py --interval 15
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

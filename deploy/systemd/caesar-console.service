@@ -1,0 +1,14 @@
+[Unit]
+Description=Caesar Console
+After=network-online.target caesar-hub.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/uriel-caesar
+ExecStart=/usr/bin/python3 services/caesar_console/server.py --host 0.0.0.0 --port 8090
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
