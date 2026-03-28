@@ -9,12 +9,63 @@
   <body>
     <main class="shell">
       <section class="hero">
-        <div>
+        <div class="hero-copy">
           <p class="eyebrow">Caesar Console</p>
           <h1>Regional intelligence dashboard</h1>
-          <p class="subtitle">Live view of latest tracks, high-interest alerts, and node activity across the mesh.</p>
+          <p class="subtitle">A command-layer view of how edge sensing, regional aggregation, orchestration, and learning fit together across agriculture, infrastructure monitoring, surveillance, and tactical situational awareness.</p>
+          <div class="hero-tags">
+            <span>Agriculture</span>
+            <span>Infrastructure</span>
+            <span>Surveillance</span>
+            <span>Tactical</span>
+          </div>
         </div>
         <button id="refresh">Refresh</button>
+      </section>
+
+      <section class="story-grid">
+        <article class="panel narrative-panel">
+          <p class="section-kicker">Operational Story</p>
+          <h2>Why this system exists</h2>
+          <p id="missionNarrative" class="lead-copy">The mesh turns raw edge sensing into routed regional intelligence so operators can understand what is happening, where it is happening, and which node or protocol layer should respond next.</p>
+          <div class="story-points">
+            <div>
+              <strong>Sense at the edge</strong>
+              <p>Cameras, thermal devices, and radar feeds are interpreted locally so heavy raw payloads do not dominate the network.</p>
+            </div>
+            <div>
+              <strong>Compress to semantics</strong>
+              <p>Only the operationally relevant meaning of a scene is sent upstream: confidence, location proxy, threat level, modalities, and evidence digests.</p>
+            </div>
+            <div>
+              <strong>Coordinate at the region</strong>
+              <p>The regional layer aggregates, assigns protocol posture, plans learning rounds, and keeps governance records for audit and compliance.</p>
+            </div>
+          </div>
+        </article>
+
+        <article class="panel">
+          <p class="section-kicker">Mission Profiles</p>
+          <h2>How the platform is used</h2>
+          <div class="mission-grid">
+            <article class="mission-card">
+              <strong>Agriculture</strong>
+              <p>Field perimeters, irrigation corridors, livestock routes, and anomaly hot spots can be monitored without hauling raw video off-site.</p>
+            </article>
+            <article class="mission-card">
+              <strong>Infrastructure</strong>
+              <p>Substations, pipelines, towers, and utility corridors benefit from multi-node awareness, regional summaries, and auditable alert flow.</p>
+            </article>
+            <article class="mission-card">
+              <strong>Surveillance</strong>
+              <p>Persistent site watch becomes easier to operate when towers, relays, and the regional hub all tell one coherent story.</p>
+            </article>
+            <article class="mission-card">
+              <strong>Tactical</strong>
+              <p>Authorized situational awareness improves when relay nodes, high-priority routing, and learning layers adapt faster than a single fixed sensor can.</p>
+            </article>
+          </div>
+        </article>
       </section>
 
       <section class="cards">
@@ -58,6 +109,18 @@
         </article>
       </section>
 
+      <section class="panel-grid">
+        <article class="panel">
+          <h2>Node Registry</h2>
+          <div id="nodeRegistry" class="registry-list"></div>
+        </article>
+        <article class="panel">
+          <h2>Governance and Trust</h2>
+          <div id="governanceSummary" class="stat-list"></div>
+          <div id="governanceAudit" class="alerts compact-alerts"></div>
+        </article>
+      </section>
+
       <section class="panel">
         <h2>Latest Tracks</h2>
         <div class="table-wrap">
@@ -84,6 +147,11 @@
       <section class="panel">
         <h2>Orchestration Plan</h2>
         <div id="orchestrationPlan" class="alerts"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Learning Plan Details</h2>
+        <div id="learningPlanDetails" class="alerts"></div>
       </section>
     </main>
     <script src="/static/app.js"></script>

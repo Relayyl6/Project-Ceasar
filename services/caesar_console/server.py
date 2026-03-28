@@ -19,6 +19,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--orchestration-plan", default="output/caesar/control_plane/orchestration_plan.json")
     parser.add_argument("--learning-plan", default="output/caesar/control_plane/learning_plan.json")
     parser.add_argument("--node-registry", default="output/caesar/control_plane/node_registry.json")
+    parser.add_argument("--governance-audit", default="output/caesar/control_plane/governance_audit.jsonl")
     return parser.parse_args()
 
 
@@ -30,6 +31,7 @@ class CaesarConsoleHandler(BaseHTTPRequestHandler):
     orchestration_plan_path: Path
     learning_plan_path: Path
     node_registry_path: Path
+    governance_audit_path: Path
     static_dir: Path
 
     def do_GET(self) -> None:
@@ -53,6 +55,9 @@ class CaesarConsoleHandler(BaseHTTPRequestHandler):
             return self.write_json(read_json(self.learning_plan_path))
         if parsed.path == "/api/node-registry":
             return self.write_json(read_json(self.node_registry_path))
+        if parsed.path == "/api/governance-audit":
+            limit = int(parse_qs(parsed.query).get("limit", ["25"])[0])
+            return self.write_json(read_jsonl_tail(self.governance_audit_path, limit))
         if parsed.path == "/api/stats":
             stats = build_stats(
                 read_latest(self.latest_path),
@@ -143,6 +148,7 @@ def main() -> int:
     handler.orchestration_plan_path = Path(args.orchestration_plan)
     handler.learning_plan_path = Path(args.learning_plan)
     handler.node_registry_path = Path(args.node_registry)
+    handler.governance_audit_path = Path(args.governance_audit)
     handler.static_dir = Path(__file__).with_name("static")
 
     server = ThreadingHTTPServer((args.host, args.port), handler)

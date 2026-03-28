@@ -21,6 +21,10 @@ function renderStatList(target, items) {
   }
 }
 
+function formatLabel(label) {
+  return label.replaceAll("_", " ");
+}
+
 function renderTracks(target, latest) {
   target.innerHTML = "";
   const records = Object.values(latest);
@@ -64,6 +68,30 @@ function renderAlerts(target, alerts) {
   }
 }
 
+function renderNodeRegistry(target, registry) {
+  target.innerHTML = "";
+  const nodes = registry.nodes || [];
+  if (!nodes.length) {
+    target.innerHTML = "<p class='empty'>No node registry data yet.</p>";
+    return;
+  }
+  for (const node of nodes) {
+    const card = document.createElement("article");
+    card.className = "registry-card";
+    card.innerHTML = `
+      <header>
+        <strong>${node.node_id}</strong>
+        <span class="pill ${node.active ? "active-pill" : "inactive-pill"}">${node.active ? "active" : "inactive"}</span>
+      </header>
+      <p>${formatLabel(node.role)} in ${node.zone}</p>
+      <small>Protocols: ${node.protocols.join(", ")}</small>
+      <small>Learning: ${node.learning_layers.join(", ")}</small>
+      <small>Capabilities: ${node.capabilities.join(", ")}</small>
+    `;
+    target.appendChild(card);
+  }
+}
+
 function renderSummary(target, items) {
   target.innerHTML = "";
   for (const [label, value] of Object.entries(items)) {
@@ -92,20 +120,90 @@ function renderOrchestration(target, plan) {
   }
 }
 
+function renderGovernance(targetSummary, targetAudit, stats, registry, audit) {
+  renderSummary(targetSummary, {
+    registered_nodes: stats.registered_node_count || 0,
+    active_nodes: Object.keys(stats.node_counts || {}).length,
+    trust_posture: stats.registered_node_count > 0 ? "allowlisted" : "open",
+    audit_events: audit.length,
+  });
+
+  targetAudit.innerHTML = "";
+  if (!audit.length) {
+    targetAudit.innerHTML = "<p class='empty'>No governance audit events yet.</p>";
+    return;
+  }
+
+  for (const event of audit) {
+    const card = document.createElement("article");
+    card.className = "alert-card";
+    card.innerHTML = `
+      <p><strong>Federated round:</strong> ${event.federated_round}</p>
+      <small>policy digest: ${Object.values(event.policy_digest || {}).join(", ")}</small>
+    `;
+    targetAudit.appendChild(card);
+  }
+}
+
+function renderLearningPlanDetails(target, learningPlan) {
+  target.innerHTML = "";
+  const sections = [
+    ["Supervised", learningPlan.supervised_learning || []],
+    ["Semi-supervised", learningPlan.semi_supervised_learning || []],
+    ["Reinforcement", learningPlan.reinforcement_learning || []],
+  ];
+
+  for (const [title, jobs] of sections) {
+    const card = document.createElement("article");
+    card.className = "alert-card";
+    if (!jobs.length) {
+      card.innerHTML = `<header><strong>${title}</strong></header><p>No jobs planned.</p>`;
+    } else {
+      const items = jobs
+        .map((job) => `<li>${job.node_id}: ${formatLabel(job.job_type)} -> ${job.target_model || job.target_policy}</li>`)
+        .join("");
+      card.innerHTML = `<header><strong>${title}</strong></header><ul class="compact-list">${items}</ul>`;
+    }
+    target.appendChild(card);
+  }
+}
+
+function buildMissionNarrative(stats, regionalSummary, learningPlan, registry) {
+  const activeNodes = Object.keys(stats.node_counts || {}).length;
+  const profiles = [];
+  if (activeNodes) profiles.push(`${activeNodes} live node${activeNodes === 1 ? "" : "s"}`);
+  if (regionalSummary.active_track_count) profiles.push(`${regionalSummary.active_track_count} active track${regionalSummary.active_track_count === 1 ? "" : "s"}`);
+  if ((learningPlan.supervised_learning || []).length) profiles.push(`${(learningPlan.supervised_learning || []).length} supervised updates queued`);
+  if ((learningPlan.reinforcement_learning || []).length) profiles.push(`${(learningPlan.reinforcement_learning || []).length} routing policy jobs`);
+  if (!profiles.length) {
+    return "The mesh is online but quiet: node registry, learning fabric, and governance layers are ready to coordinate once edge nodes begin sending semantic tracks.";
+  }
+
+  return `The mesh is currently coordinating ${profiles.join(", ")}. This view ties edge sensing to the regional story: agriculture and infrastructure operators see corridor and anomaly pressure, surveillance teams see node posture and alert density, and tactical users see which relay and protocol layers should carry high-priority traffic next.`;
+}
+
 async function refresh() {
-  const [stats, latest, alerts, regionalSummary, learningPlan, orchestrationPlan] = await Promise.all([
+  const [stats, latest, alerts, regionalSummary, learningPlan, orchestrationPlan, nodeRegistry, governanceAudit] = await Promise.all([
     loadJson("/api/stats"),
     loadJson("/api/latest"),
     loadJson("/api/high-interest?limit=25"),
     loadJson("/api/regional-summary"),
     loadJson("/api/learning-plan"),
     loadJson("/api/orchestration"),
+    loadJson("/api/node-registry"),
+    loadJson("/api/governance-audit?limit=10"),
   ]);
 
   document.getElementById("latestTrackCount").textContent = stats.latest_track_count;
   document.getElementById("highInterestCount").textContent = stats.high_interest_recent_count;
   document.getElementById("nodeCount").textContent = Object.keys(stats.node_counts).length;
   document.getElementById("registeredNodeCount").textContent = stats.registered_node_count;
+  document.getElementById("missionNarrative").textContent = buildMissionNarrative(
+    stats,
+    regionalSummary,
+    learningPlan,
+    nodeRegistry,
+  );
 
   renderStatList(document.getElementById("threatCounts"), stats.threat_counts);
   renderStatList(document.getElementById("nodeCounts"), stats.node_counts);
@@ -124,6 +222,15 @@ async function refresh() {
   renderTracks(document.getElementById("latestTracks"), latest);
   renderAlerts(document.getElementById("alerts"), alerts);
   renderOrchestration(document.getElementById("orchestrationPlan"), orchestrationPlan);
+  renderNodeRegistry(document.getElementById("nodeRegistry"), nodeRegistry);
+  renderGovernance(
+    document.getElementById("governanceSummary"),
+    document.getElementById("governanceAudit"),
+    stats,
+    nodeRegistry,
+    governanceAudit,
+  );
+  renderLearningPlanDetails(document.getElementById("learningPlanDetails"), learningPlan);
 }
 
 document.getElementById("refresh").addEventListener("click", refresh);
