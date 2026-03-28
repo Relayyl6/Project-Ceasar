@@ -56,8 +56,54 @@
       };
     </script>
     <link rel="stylesheet" href="/static/styles.css" />
+    <style>
+      @keyframes spin { to { transform: rotate(360deg); } }
+      .spinner { animation: spin 1s linear infinite; }
+      @keyframes pulse-dot { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+      .pulse-dot { animation: pulse-dot 1.4s ease-in-out infinite; }
+      @keyframes slide-in-top {
+        from { transform: translateY(-100%); opacity: 0; }
+        to   { transform: translateY(0);    opacity: 1; }
+      }
+      .slide-in-top { animation: slide-in-top 0.25s ease-out; }
+    </style>
   </head>
   <body class="bg-surface text-on-surface font-body overflow-hidden">
+
+    <!-- ─── Offline banner ─────────────────────────────────────────────── -->
+    <div
+      id="offlineBanner"
+      class="hidden fixed top-16 left-0 right-0 z-[60] slide-in-top lg:left-64"
+      style="background:rgba(255,113,108,0.12);border-bottom:1px solid rgba(255,113,108,0.35);"
+    >
+      <div class="flex items-center justify-between px-4 py-2 lg:px-6">
+        <div class="flex items-center gap-3">
+          <span class="material-symbols-outlined text-error text-sm" style="font-variation-settings:'FILL' 1">wifi_off</span>
+          <span class="font-mono text-[0.68rem] uppercase tracking-[0.1em] text-error">
+            Server unreachable on localhost:8090 — displaying last known data. Auto-reconnecting…
+          </span>
+        </div>
+        <button
+          id="retryBtn"
+          class="hidden flex items-center gap-1.5 border border-error/40 px-3 py-1 font-mono text-[0.65rem] uppercase tracking-[0.1em] text-error hover:bg-error/10 transition-colors"
+        >
+          <span class="material-symbols-outlined text-sm">refresh</span> Retry Now
+        </button>
+      </div>
+    </div>
+
+    <!-- ─── Staleness warning ──────────────────────────────────────────── -->
+    <div
+      id="stalenessWarning"
+      class="hidden fixed z-[59] slide-in-top lg:left-64"
+      style="top:4rem;left:0;right:0;background:rgba(255,209,108,0.08);border-bottom:1px solid rgba(255,209,108,0.25);"
+    >
+      <div class="px-4 py-2 lg:px-6">
+        <span id="stalenessText" class="font-mono text-[0.65rem] uppercase tracking-[0.08em] text-tertiary"></span>
+      </div>
+    </div>
+
+    <!-- ─── Header ────────────────────────────────────────────────────── -->
     <header class="fixed top-0 z-50 flex h-16 w-full items-center justify-between border-b-2 border-[#1b2028] bg-[#0a0e14] px-4 lg:px-6">
       <div class="flex items-center gap-6 lg:gap-8">
         <h1 class="font-headline text-xl font-black uppercase tracking-[0.18em] text-[#50e1f9] lg:text-2xl">
@@ -65,7 +111,7 @@
         </h1>
         <nav class="hidden gap-6 md:flex">
           <span id="regionLabel" class="border-b-2 border-[#50e1f9] py-5 font-headline text-sm uppercase tracking-tight text-[#50e1f9]">
-            BWARI, FCT
+            BWARI
           </span>
           <span id="nodeHealthLabel" class="py-5 font-headline text-sm uppercase tracking-tight text-[#a8abb3]">
             Node Health: --
@@ -75,7 +121,21 @@
           </span>
         </nav>
       </div>
-      <div class="flex items-center gap-2 lg:gap-4">
+
+      <div class="flex items-center gap-2 lg:gap-3">
+        <!-- Connection badge -->
+        <div
+          id="connBadge"
+          class="hidden md:flex items-center gap-2 border px-3 py-1.5 transition-colors"
+          style="border-color:rgba(255,209,108,0.25);background:rgba(15,20,26,0.9);"
+        >
+          <!-- Refreshing spinner -->
+          <span id="refreshingSpinner" class="hidden material-symbols-outlined text-[#50e1f9] spinner" style="font-size:0.85rem;">progress_activity</span>
+          <!-- Status dot -->
+          <span id="connDot" class="h-2 w-2 rounded-full pulse-dot flex-shrink-0" style="background:#ffd16c;box-shadow:0 0 8px #ffd16c;"></span>
+          <span id="connLabel" class="font-mono text-[0.62rem] uppercase tracking-[0.1em] text-[#a8abb3] whitespace-nowrap">Connecting…</span>
+        </div>
+
         <button class="p-2 text-[#a8abb3] transition-colors duration-75 hover:bg-[#1b2028] hover:text-[#50e1f9] active:scale-95" title="Sensor mesh">
           <span class="material-symbols-outlined">sensors</span>
         </button>
@@ -85,6 +145,7 @@
         <button class="p-2 text-[#a8abb3] transition-colors duration-75 hover:bg-[#1b2028] hover:text-[#50e1f9] active:scale-95" title="Learning fabric">
           <span class="material-symbols-outlined">account_tree</span>
         </button>
+
         <div class="hidden items-center gap-3 border border-[#44484f]/30 bg-surface-container-high px-3 py-1.5 md:flex">
           <div class="flex h-8 w-8 items-center justify-center border border-[#44484f]/40 bg-[#11161d] text-[#50e1f9]">
             <span class="material-symbols-outlined text-base">admin_panel_settings</span>
@@ -99,6 +160,7 @@
       </div>
     </header>
 
+    <!-- ─── Sidebar ───────────────────────────────────────────────────── -->
     <aside class="fixed left-0 top-16 z-40 hidden h-[calc(100vh-64px)] w-64 flex-col justify-between border-r border-[#44484f]/15 bg-[#0f141a] py-4 lg:flex">
       <div class="space-y-1">
         <div class="mb-4 px-6 py-4">
@@ -120,16 +182,27 @@
       </div>
 
       <div class="space-y-4 px-4">
+        <!-- Mission narrative -->
         <div class="ghost-border bg-surface-container-low px-4 py-3">
           <div class="font-headline text-[0.65rem] uppercase tracking-[0.25em] text-[#7d8694]">Mission Story</div>
           <p id="missionNarrative" class="mt-2 text-sm leading-6 text-[#cfd7e4]">
             Waiting for live mesh state.
           </p>
         </div>
+
+        <!-- Endpoint health panel -->
+        <div class="ghost-border bg-surface-container-low px-4 py-3">
+          <div class="mb-2 font-headline text-[0.65rem] uppercase tracking-[0.25em] text-[#7d8694]">API Endpoints</div>
+          <div id="endpointHealthPanel" class="grid grid-cols-2 gap-x-2 gap-y-1">
+            <span class="text-[#7d8694] font-mono text-[0.6rem]">Polling…</span>
+          </div>
+        </div>
+
         <button
           id="refreshFeed"
-          class="w-full bg-primary py-3 font-headline text-xs font-bold tracking-[0.28em] text-[#003239] transition-all hover:brightness-110 active:scale-[0.98]"
+          class="w-full bg-primary py-3 font-headline text-xs font-bold tracking-[0.28em] text-[#003239] transition-all hover:brightness-110 active:scale-[0.98] flex items-center justify-center gap-2"
         >
+          <span class="material-symbols-outlined text-sm">refresh</span>
           REFRESH FEED
         </button>
         <div class="border-t border-outline-variant/10 pt-4">
@@ -143,8 +216,11 @@
       </div>
     </aside>
 
+    <!-- ─── Main ──────────────────────────────────────────────────────── -->
     <main class="mt-16 h-[calc(100vh-64px)] overflow-y-auto bg-surface-dim px-4 pb-20 pt-6 lg:ml-64 lg:px-6">
       <div class="grid content-start grid-cols-12 gap-6">
+
+        <!-- Metric cards -->
         <section class="col-span-12 grid grid-cols-1 gap-4 md:grid-cols-2 2xl:grid-cols-4">
           <article class="metric-card">
             <span class="metric-label">Active Mesh Tracks</span>
@@ -180,6 +256,7 @@
           </article>
         </section>
 
+        <!-- Tactical map -->
         <section class="col-span-12 xl:col-span-8">
           <div class="tactical-map relative h-[520px] overflow-hidden border border-outline-variant/10 bg-surface-container-lowest">
             <div class="absolute inset-0 tactical-map-texture"></div>
@@ -214,6 +291,7 @@
           </div>
         </section>
 
+        <!-- Heatmap + Confidence -->
         <section class="col-span-12 flex h-[520px] flex-col gap-6 xl:col-span-4">
           <article class="ghost-border flex-1 bg-surface-container-low p-4">
             <h3 class="mb-4 flex items-center justify-between font-headline text-xs font-bold uppercase tracking-[0.28em] text-on-surface-variant">
@@ -226,7 +304,6 @@
               <span id="kernelValue">Kernel: RBF-ST</span>
             </div>
           </article>
-
           <article class="ghost-border flex-1 bg-surface-container-low p-4">
             <h3 class="mb-4 font-headline text-xs font-bold uppercase tracking-[0.28em] text-on-surface-variant">
               Confidence Intervals
@@ -235,6 +312,7 @@
           </article>
         </section>
 
+        <!-- Learning fabric -->
         <section class="col-span-12 xl:col-span-4">
           <article class="ghost-border h-full bg-surface-container-low p-5">
             <h3 class="mb-6 flex items-center gap-2 font-headline text-xs font-bold uppercase tracking-[0.28em] text-on-surface-variant">
@@ -257,8 +335,7 @@
                 </label>
                 <div id="rlAgentGrid" class="grid grid-cols-6 gap-2"></div>
                 <div class="mt-2 font-mono text-[0.65rem] uppercase text-on-surface-variant">
-                  Central coordinator:
-                  <span id="criticStatus" class="text-secondary">IDLE</span>
+                  Central coordinator: <span id="criticStatus" class="text-secondary">IDLE</span>
                 </div>
               </div>
               <div class="ghost-border bg-[#11161d] p-4">
@@ -271,6 +348,7 @@
           </article>
         </section>
 
+        <!-- Track log -->
         <section id="trackLogPanel" class="col-span-12 xl:col-span-8">
           <article class="ghost-border bg-surface-container-low p-5">
             <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -299,6 +377,7 @@
           </article>
         </section>
 
+        <!-- High-interest feed -->
         <section class="col-span-12 xl:col-span-4">
           <article class="ghost-border h-full bg-surface-container-low p-5">
             <div class="mb-4 flex items-center justify-between">
@@ -313,6 +392,7 @@
           </article>
         </section>
 
+        <!-- Orchestration / Governance / Node Registry -->
         <section class="col-span-12 grid grid-cols-1 gap-6 xl:grid-cols-3">
           <article class="ghost-border bg-surface-container-low p-5">
             <h3 class="mb-4 font-headline text-xs font-bold uppercase tracking-[0.28em] text-on-surface-variant">
@@ -336,9 +416,11 @@
             <div id="nodeRegistryPanel" class="space-y-3"></div>
           </article>
         </section>
+
       </div>
     </main>
 
+    <!-- ─── Right FABs ─────────────────────────────────────────────────── -->
     <aside class="fixed right-4 top-24 z-40 hidden flex-col gap-4 xl:flex">
       <button class="mission-fab" title="Agriculture mode">
         <span class="material-symbols-outlined">potted_plant</span>
@@ -351,6 +433,7 @@
       </button>
     </aside>
 
+    <!-- ─── Footer ticker ──────────────────────────────────────────────── -->
     <footer class="fixed bottom-0 left-0 right-0 z-50 flex h-8 items-center border-t border-outline-variant/10 bg-surface-container-lowest px-4 font-mono text-[0.62rem] text-on-surface-variant lg:left-64">
       <div class="flex w-full items-center gap-4">
         <span class="flex items-center gap-1 text-secondary">
@@ -359,7 +442,7 @@
         <span class="opacity-50">|</span>
         <div class="flex-1 overflow-hidden whitespace-nowrap">
           <span class="mr-2 text-primary">AEGIS_STREAM:</span>
-          <span id="tickerStream">Awaiting rolling command-layer telemetry...</span>
+          <span id="tickerStream">Awaiting rolling command-layer telemetry…</span>
         </div>
         <span id="footerCipher" class="text-[0.58rem] uppercase tracking-[0.2em]">SIGNED ENVELOPES: ED25519</span>
       </div>
