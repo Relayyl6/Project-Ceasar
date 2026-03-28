@@ -1,159 +1,370 @@
 <!DOCTYPE html>
-<html lang="en">
+<html class="dark" lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Caesar Console</title>
+    <meta content="width=device-width, initial-scale=1.0" name="viewport" />
+    <title>AEGIS COMMAND - Caesar Console</title>
+    <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap"
+      rel="stylesheet"
+    />
+    <script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              "surface-dim": "#0a0e14",
+              "secondary-container": "#025e16",
+              "surface-container-lowest": "#000000",
+              tertiary: "#ffd16c",
+              primary: "#50e1f9",
+              secondary: "#9df197",
+              "on-background": "#f1f3fc",
+              "surface-container-highest": "#20262f",
+              surface: "#0a0e14",
+              "outline-variant": "#44484f",
+              background: "#0a0e14",
+              "on-surface-variant": "#a8abb3",
+              "surface-container-low": "#0f141a",
+              outline: "#72757d",
+              "error-dim": "#d7383b",
+              "surface-container-high": "#1b2028",
+              "surface-container": "#151a21",
+              error: "#ff716c",
+              "on-surface": "#f1f3fc",
+            },
+            fontFamily: {
+              headline: ["Space Grotesk"],
+              body: ["Inter"],
+              label: ["Space Grotesk"],
+              mono: ["JetBrains Mono"],
+            },
+            borderRadius: {
+              DEFAULT: "0px",
+              lg: "0px",
+              xl: "0px",
+              full: "9999px",
+            },
+          },
+        },
+      };
+    </script>
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
-  <body>
-    <main class="shell">
-      <section class="hero">
-        <div class="hero-copy">
-          <p class="eyebrow">Caesar Console</p>
-          <h1>Regional intelligence dashboard</h1>
-          <p class="subtitle">A command-layer view of how edge sensing, regional aggregation, orchestration, and learning fit together across agriculture, infrastructure monitoring, surveillance, and tactical situational awareness.</p>
-          <div class="hero-tags">
-            <span>Agriculture</span>
-            <span>Infrastructure</span>
-            <span>Surveillance</span>
-            <span>Tactical</span>
+  <body class="bg-surface text-on-surface font-body overflow-hidden">
+    <header class="fixed top-0 z-50 flex h-16 w-full items-center justify-between border-b-2 border-[#1b2028] bg-[#0a0e14] px-4 lg:px-6">
+      <div class="flex items-center gap-6 lg:gap-8">
+        <h1 class="font-headline text-xl font-black uppercase tracking-[0.18em] text-[#50e1f9] lg:text-2xl">
+          AEGIS COMMAND
+        </h1>
+        <nav class="hidden gap-6 md:flex">
+          <span id="regionLabel" class="border-b-2 border-[#50e1f9] py-5 font-headline text-sm uppercase tracking-tight text-[#50e1f9]">
+            BWARI, FCT
+          </span>
+          <span id="nodeHealthLabel" class="py-5 font-headline text-sm uppercase tracking-tight text-[#a8abb3]">
+            Node Health: --
+          </span>
+          <span id="windowLabel" class="py-5 font-headline text-sm uppercase tracking-tight text-[#a8abb3]">
+            Rolling Window: --
+          </span>
+        </nav>
+      </div>
+      <div class="flex items-center gap-2 lg:gap-4">
+        <button class="p-2 text-[#a8abb3] transition-colors duration-75 hover:bg-[#1b2028] hover:text-[#50e1f9] active:scale-95" title="Sensor mesh">
+          <span class="material-symbols-outlined">sensors</span>
+        </button>
+        <button class="p-2 text-[#a8abb3] transition-colors duration-75 hover:bg-[#1b2028] hover:text-[#50e1f9] active:scale-95" title="Regional hub">
+          <span class="material-symbols-outlined">hub</span>
+        </button>
+        <button class="p-2 text-[#a8abb3] transition-colors duration-75 hover:bg-[#1b2028] hover:text-[#50e1f9] active:scale-95" title="Learning fabric">
+          <span class="material-symbols-outlined">account_tree</span>
+        </button>
+        <div class="hidden items-center gap-3 border border-[#44484f]/30 bg-surface-container-high px-3 py-1.5 md:flex">
+          <div class="flex h-8 w-8 items-center justify-center border border-[#44484f]/40 bg-[#11161d] text-[#50e1f9]">
+            <span class="material-symbols-outlined text-base">admin_panel_settings</span>
+          </div>
+          <div class="min-w-0">
+            <div class="truncate font-headline text-[0.7rem] font-bold uppercase tracking-[0.18em] text-[#f1f3fc]">Regional command</div>
+            <div id="clusterLabel" class="truncate font-mono text-[0.6rem] uppercase tracking-[0.2em] text-[#7d8694]">
+              uriel orchestrator
+            </div>
           </div>
         </div>
-        <button id="refresh">Refresh</button>
-      </section>
+      </div>
+    </header>
 
-      <section class="story-grid">
-        <article class="panel narrative-panel">
-          <p class="section-kicker">Operational Story</p>
-          <h2>Why this system exists</h2>
-          <p id="missionNarrative" class="lead-copy">The mesh turns raw edge sensing into routed regional intelligence so operators can understand what is happening, where it is happening, and which node or protocol layer should respond next.</p>
-          <div class="story-points">
-            <div>
-              <strong>Sense at the edge</strong>
-              <p>Cameras, thermal devices, and radar feeds are interpreted locally so heavy raw payloads do not dominate the network.</p>
-            </div>
-            <div>
-              <strong>Compress to semantics</strong>
-              <p>Only the operationally relevant meaning of a scene is sent upstream: confidence, location proxy, threat level, modalities, and evidence digests.</p>
-            </div>
-            <div>
-              <strong>Coordinate at the region</strong>
-              <p>The regional layer aggregates, assigns protocol posture, plans learning rounds, and keeps governance records for audit and compliance.</p>
-            </div>
-          </div>
-        </article>
-
-        <article class="panel">
-          <p class="section-kicker">Mission Profiles</p>
-          <h2>How the platform is used</h2>
-          <div class="mission-grid">
-            <article class="mission-card">
-              <strong>Agriculture</strong>
-              <p>Field perimeters, irrigation corridors, livestock routes, and anomaly hot spots can be monitored without hauling raw video off-site.</p>
-            </article>
-            <article class="mission-card">
-              <strong>Infrastructure</strong>
-              <p>Substations, pipelines, towers, and utility corridors benefit from multi-node awareness, regional summaries, and auditable alert flow.</p>
-            </article>
-            <article class="mission-card">
-              <strong>Surveillance</strong>
-              <p>Persistent site watch becomes easier to operate when towers, relays, and the regional hub all tell one coherent story.</p>
-            </article>
-            <article class="mission-card">
-              <strong>Tactical</strong>
-              <p>Authorized situational awareness improves when relay nodes, high-priority routing, and learning layers adapt faster than a single fixed sensor can.</p>
-            </article>
-          </div>
-        </article>
-      </section>
-
-      <section class="cards">
-        <article class="card">
-          <span>Latest Tracks</span>
-          <strong id="latestTrackCount">0</strong>
-        </article>
-        <article class="card">
-          <span>Recent High-Interest</span>
-          <strong id="highInterestCount">0</strong>
-        </article>
-        <article class="card">
-          <span>Tracked Nodes</span>
-          <strong id="nodeCount">0</strong>
-        </article>
-        <article class="card">
-          <span>Registered Nodes</span>
-          <strong id="registeredNodeCount">0</strong>
-        </article>
-      </section>
-
-      <section class="panel-grid">
-        <article class="panel">
-          <h2>Threat Distribution</h2>
-          <div id="threatCounts" class="stat-list"></div>
-        </article>
-        <article class="panel">
-          <h2>Node Activity</h2>
-          <div id="nodeCounts" class="stat-list"></div>
-        </article>
-      </section>
-
-      <section class="panel-grid">
-        <article class="panel">
-          <h2>Regional Summary</h2>
-          <div id="regionalSummary" class="stat-list"></div>
-        </article>
-        <article class="panel">
-          <h2>Learning Fabric</h2>
-          <div id="learningSummary" class="stat-list"></div>
-        </article>
-      </section>
-
-      <section class="panel-grid">
-        <article class="panel">
-          <h2>Node Registry</h2>
-          <div id="nodeRegistry" class="registry-list"></div>
-        </article>
-        <article class="panel">
-          <h2>Governance and Trust</h2>
-          <div id="governanceSummary" class="stat-list"></div>
-          <div id="governanceAudit" class="alerts compact-alerts"></div>
-        </article>
-      </section>
-
-      <section class="panel">
-        <h2>Latest Tracks</h2>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Track</th>
-                <th>Node</th>
-                <th>Threat</th>
-                <th>Confidence</th>
-                <th>Modalities</th>
-              </tr>
-            </thead>
-            <tbody id="latestTracks"></tbody>
-          </table>
+    <aside class="fixed left-0 top-16 z-40 hidden h-[calc(100vh-64px)] w-64 flex-col justify-between border-r border-[#44484f]/15 bg-[#0f141a] py-4 lg:flex">
+      <div class="space-y-1">
+        <div class="mb-4 px-6 py-4">
+          <div class="font-headline text-lg font-bold uppercase text-[#50e1f9]">PROJECT CAESAR</div>
+          <div class="font-mono text-[10px] tracking-[0.35em] text-on-surface-variant">URIEL ORCHESTRATOR</div>
         </div>
-      </section>
+        <button id="modeAgriculture" class="mission-link">
+          <span class="material-symbols-outlined">agriculture</span> Agri 4.0
+        </button>
+        <button id="modeInfrastructure" class="mission-link">
+          <span class="material-symbols-outlined">construction</span> Infrastructure
+        </button>
+        <button id="modeTactical" class="mission-link mission-link-active">
+          <span class="material-symbols-outlined">shield</span> Tactical Grid
+        </button>
+        <button id="modeSurveillance" class="mission-link">
+          <span class="material-symbols-outlined">visibility</span> Surveillance
+        </button>
+      </div>
 
-      <section class="panel">
-        <h2>Recent High-Interest Alerts</h2>
-        <div id="alerts" class="alerts"></div>
-      </section>
+      <div class="space-y-4 px-4">
+        <div class="ghost-border bg-surface-container-low px-4 py-3">
+          <div class="font-headline text-[0.65rem] uppercase tracking-[0.25em] text-[#7d8694]">Mission Story</div>
+          <p id="missionNarrative" class="mt-2 text-sm leading-6 text-[#cfd7e4]">
+            Waiting for live mesh state.
+          </p>
+        </div>
+        <button
+          id="refreshFeed"
+          class="w-full bg-primary py-3 font-headline text-xs font-bold tracking-[0.28em] text-[#003239] transition-all hover:brightness-110 active:scale-[0.98]"
+        >
+          REFRESH FEED
+        </button>
+        <div class="border-t border-outline-variant/10 pt-4">
+          <a class="sidebar-meta-link" href="#governancePanel">
+            <span class="material-symbols-outlined text-sm">settings</span> Governance
+          </a>
+          <a class="sidebar-meta-link" href="#trackLogPanel">
+            <span class="material-symbols-outlined text-sm">terminal</span> Track Log
+          </a>
+        </div>
+      </div>
+    </aside>
 
-      <section class="panel">
-        <h2>Orchestration Plan</h2>
-        <div id="orchestrationPlan" class="alerts"></div>
-      </section>
+    <main class="mt-16 h-[calc(100vh-64px)] overflow-y-auto bg-surface-dim px-4 pb-20 pt-6 lg:ml-64 lg:px-6">
+      <div class="grid content-start grid-cols-12 gap-6">
+        <section class="col-span-12 grid grid-cols-1 gap-4 md:grid-cols-2 2xl:grid-cols-4">
+          <article class="metric-card">
+            <span class="metric-label">Active Mesh Tracks</span>
+            <div class="mt-2 flex items-end justify-between">
+              <span id="metricActiveTracks" class="metric-value text-primary">0</span>
+              <span class="material-symbols-outlined text-xl text-primary">conversion_path</span>
+            </div>
+            <p id="metricTrackSubtext" class="metric-subtext">Rolling active-state count</p>
+          </article>
+          <article class="metric-card">
+            <span class="metric-label">Regional Throughput</span>
+            <div class="mt-2 flex items-end justify-between gap-2">
+              <span id="metricThroughput" class="metric-value text-secondary">0</span>
+              <span class="material-symbols-outlined text-xl text-secondary">speed</span>
+            </div>
+            <p id="metricThroughputSubtext" class="metric-subtext">Semantic packets per minute</p>
+          </article>
+          <article class="metric-card">
+            <span class="metric-label">Anomaly Probability</span>
+            <div class="mt-2 flex items-end justify-between">
+              <span id="metricAnomaly" class="metric-value text-tertiary">0.00%</span>
+              <span class="material-symbols-outlined text-xl text-tertiary">warning</span>
+            </div>
+            <p id="metricAnomalySubtext" class="metric-subtext">High-interest share of active tracks</p>
+          </article>
+          <article class="metric-card">
+            <span class="metric-label">FedPDM Alignment</span>
+            <div class="mt-2 flex items-end justify-between">
+              <span id="metricAlignment" class="metric-value text-on-surface">0.00</span>
+              <span class="material-symbols-outlined text-xl text-on-surface-variant">analytics</span>
+            </div>
+            <p id="metricAlignmentSubtext" class="metric-subtext">Participant coverage over registered nodes</p>
+          </article>
+        </section>
 
-      <section class="panel">
-        <h2>Learning Plan Details</h2>
-        <div id="learningPlanDetails" class="alerts"></div>
-      </section>
+        <section class="col-span-12 xl:col-span-8">
+          <div class="tactical-map relative h-[520px] overflow-hidden border border-outline-variant/10 bg-surface-container-lowest">
+            <div class="absolute inset-0 tactical-map-texture"></div>
+            <div class="absolute inset-0 bg-[radial-gradient(circle_at_20%_30%,rgba(80,225,249,0.12),transparent_22%),radial-gradient(circle_at_75%_65%,rgba(157,241,151,0.12),transparent_22%),linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0))]"></div>
+            <svg id="mapLinks" class="absolute inset-0 z-10 h-full w-full opacity-70"></svg>
+            <div id="mapMarkers" class="absolute inset-0 z-20"></div>
+            <div class="glass-panel absolute left-4 top-4 z-30 max-w-md border border-outline-variant/20 p-4 lg:left-6 lg:top-6">
+              <p class="font-mono text-[0.62rem] uppercase tracking-[0.35em] text-[#8a94a3]">Regional Theater</p>
+              <h2 id="mapTitle" class="mt-2 font-headline text-2xl font-black uppercase tracking-[0.08em] text-[#f1f3fc]">
+                BWARI, FCT
+              </h2>
+              <p id="mapNarrative" class="mt-3 text-sm leading-6 text-[#d6deea]">
+                Rolling tactical picture unavailable until active tracks or node registry observations arrive.
+              </p>
+            </div>
+            <div class="glass-panel absolute bottom-4 right-4 z-30 border border-outline-variant/20 p-3">
+              <div class="space-y-2">
+                <div class="flex items-center gap-2">
+                  <div class="h-3 w-3 bg-primary"></div>
+                  <span class="font-mono text-[0.65rem] uppercase">Primary Node Grid</span>
+                </div>
+                <div class="flex items-center gap-2">
+                  <div class="h-3 w-3 bg-secondary"></div>
+                  <span class="font-mono text-[0.65rem] uppercase">Mesh Path (Active)</span>
+                </div>
+                <div class="flex items-center gap-2">
+                  <div class="h-3 w-3 bg-tertiary"></div>
+                  <span class="font-mono text-[0.65rem] uppercase">Watch / Anomaly Zone</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="col-span-12 flex h-[520px] flex-col gap-6 xl:col-span-4">
+          <article class="ghost-border flex-1 bg-surface-container-low p-4">
+            <h3 class="mb-4 flex items-center justify-between font-headline text-xs font-bold uppercase tracking-[0.28em] text-on-surface-variant">
+              Distributed Gaussian Process
+              <span class="material-symbols-outlined text-sm">grid_view</span>
+            </h3>
+            <div id="heatmapGrid" class="grid h-[calc(100%-2rem)] grid-cols-8 gap-1"></div>
+            <div class="mt-4 flex justify-between font-mono text-[0.65rem] uppercase text-on-surface-variant">
+              <span id="sigmaValue">Sigma: 0.000</span>
+              <span id="kernelValue">Kernel: RBF-ST</span>
+            </div>
+          </article>
+
+          <article class="ghost-border flex-1 bg-surface-container-low p-4">
+            <h3 class="mb-4 font-headline text-xs font-bold uppercase tracking-[0.28em] text-on-surface-variant">
+              Confidence Intervals
+            </h3>
+            <div id="confidenceBars" class="space-y-4"></div>
+          </article>
+        </section>
+
+        <section class="col-span-12 xl:col-span-4">
+          <article class="ghost-border h-full bg-surface-container-low p-5">
+            <h3 class="mb-6 flex items-center gap-2 font-headline text-xs font-bold uppercase tracking-[0.28em] text-on-surface-variant">
+              <span class="material-symbols-outlined text-sm">model_training</span> Learning Fabric
+            </h3>
+            <div class="space-y-6">
+              <div>
+                <label class="mb-2 block font-mono text-[0.62rem] uppercase tracking-[0.24em] text-on-surface-variant">
+                  Federated Round Status
+                </label>
+                <div id="federatedSegments" class="flex h-6 items-center gap-1"></div>
+                <div class="mt-2 flex justify-between font-mono text-[0.65rem]">
+                  <span id="federatedRoundLabel">Round: --</span>
+                  <span id="federatedLossLabel" class="text-primary">Alignment: --</span>
+                </div>
+              </div>
+              <div>
+                <label class="mb-2 block font-mono text-[0.62rem] uppercase tracking-[0.24em] text-on-surface-variant">
+                  Multi-Agent RL / Node Readiness
+                </label>
+                <div id="rlAgentGrid" class="grid grid-cols-6 gap-2"></div>
+                <div class="mt-2 font-mono text-[0.65rem] uppercase text-on-surface-variant">
+                  Central coordinator:
+                  <span id="criticStatus" class="text-secondary">IDLE</span>
+                </div>
+              </div>
+              <div class="ghost-border bg-[#11161d] p-4">
+                <div class="font-headline text-[0.65rem] uppercase tracking-[0.25em] text-[#7d8694]">Underlying story</div>
+                <p id="learningNarrative" class="mt-2 text-sm leading-6 text-[#cfd7e4]">
+                  Learning jobs will populate here as supervised, unsupervised, and reinforcement tasks are planned.
+                </p>
+              </div>
+            </div>
+          </article>
+        </section>
+
+        <section id="trackLogPanel" class="col-span-12 xl:col-span-8">
+          <article class="ghost-border bg-surface-container-low p-5">
+            <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <h3 class="font-headline text-xs font-bold uppercase tracking-[0.28em] text-on-surface-variant">
+                Track Log - Active Engagements
+              </h3>
+              <span id="trackLogMeta" class="font-mono text-[0.62rem] uppercase tracking-[0.24em] text-[#7d8694]">
+                Rolling active window
+              </span>
+            </div>
+            <div class="overflow-x-auto">
+              <table class="w-full border-collapse text-left">
+                <thead>
+                  <tr class="border-b border-outline-variant/20 font-mono text-[0.62rem] uppercase text-on-surface-variant">
+                    <th class="px-2 py-3">Track ID</th>
+                    <th class="px-2 py-3">Node</th>
+                    <th class="px-2 py-3">Modalities</th>
+                    <th class="px-2 py-3">Threat Score</th>
+                    <th class="px-2 py-3">Confidence</th>
+                    <th class="px-2 py-3">Timestamp</th>
+                  </tr>
+                </thead>
+                <tbody id="trackLogBody" class="font-mono text-[0.72rem]"></tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+
+        <section class="col-span-12 xl:col-span-4">
+          <article class="ghost-border h-full bg-surface-container-low p-5">
+            <div class="mb-4 flex items-center justify-between">
+              <h3 class="font-headline text-xs font-bold uppercase tracking-[0.28em] text-on-surface-variant">
+                High-Interest Feed
+              </h3>
+              <span id="alertMeta" class="font-mono text-[0.62rem] uppercase tracking-[0.24em] text-[#7d8694]">
+                Rolling alert window
+              </span>
+            </div>
+            <div id="alertsFeed" class="space-y-3"></div>
+          </article>
+        </section>
+
+        <section class="col-span-12 grid grid-cols-1 gap-6 xl:grid-cols-3">
+          <article class="ghost-border bg-surface-container-low p-5">
+            <h3 class="mb-4 font-headline text-xs font-bold uppercase tracking-[0.28em] text-on-surface-variant">
+              Orchestration Plan
+            </h3>
+            <div id="orchestrationFeed" class="space-y-3"></div>
+          </article>
+
+          <article id="governancePanel" class="ghost-border bg-surface-container-low p-5">
+            <h3 class="mb-4 font-headline text-xs font-bold uppercase tracking-[0.28em] text-on-surface-variant">
+              Governance and Trust
+            </h3>
+            <div id="governanceSummary" class="space-y-2"></div>
+            <div class="mt-4 space-y-3" id="governanceFeed"></div>
+          </article>
+
+          <article class="ghost-border bg-surface-container-low p-5">
+            <h3 class="mb-4 font-headline text-xs font-bold uppercase tracking-[0.28em] text-on-surface-variant">
+              Node Registry
+            </h3>
+            <div id="nodeRegistryPanel" class="space-y-3"></div>
+          </article>
+        </section>
+      </div>
     </main>
+
+    <aside class="fixed right-4 top-24 z-40 hidden flex-col gap-4 xl:flex">
+      <button class="mission-fab" title="Agriculture mode">
+        <span class="material-symbols-outlined">potted_plant</span>
+      </button>
+      <button class="mission-fab" title="Infrastructure mode">
+        <span class="material-symbols-outlined">domain</span>
+      </button>
+      <button class="mission-fab mission-fab-active" title="Tactical mode">
+        <span class="material-symbols-outlined">rocket_launch</span>
+      </button>
+    </aside>
+
+    <footer class="fixed bottom-0 left-0 right-0 z-50 flex h-8 items-center border-t border-outline-variant/10 bg-surface-container-lowest px-4 font-mono text-[0.62rem] text-on-surface-variant lg:left-64">
+      <div class="flex w-full items-center gap-4">
+        <span class="flex items-center gap-1 text-secondary">
+          <span class="h-1.5 w-1.5 bg-secondary"></span> LIVE
+        </span>
+        <span class="opacity-50">|</span>
+        <div class="flex-1 overflow-hidden whitespace-nowrap">
+          <span class="mr-2 text-primary">AEGIS_STREAM:</span>
+          <span id="tickerStream">Awaiting rolling command-layer telemetry...</span>
+        </div>
+        <span id="footerCipher" class="text-[0.58rem] uppercase tracking-[0.2em]">SIGNED ENVELOPES: ED25519</span>
+      </div>
+    </footer>
+
     <script src="/static/app.js"></script>
   </body>
 </html>

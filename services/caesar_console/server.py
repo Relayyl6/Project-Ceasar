@@ -1,6 +1,7 @@
 import argparse
 import json
 import mimetypes
+import time
 from collections import Counter
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -20,6 +21,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--learning-plan", default="output/caesar/control_plane/learning_plan.json")
     parser.add_argument("--node-registry", default="output/caesar/control_plane/node_registry.json")
     parser.add_argument("--governance-audit", default="output/caesar/control_plane/governance_audit.jsonl")
+    parser.add_argument("--activity-window-seconds", type=int, default=900)
+    parser.add_argument("--journal-scan-limit", type=int, default=2000)
+    parser.add_argument("--high-interest-scan-limit", type=int, default=2000)
     return parser.parse_args()
 
 
@@ -33,6 +37,9 @@ class CaesarConsoleHandler(BaseHTTPRequestHandler):
     node_registry_path: Path
     governance_audit_path: Path
     static_dir: Path
+    activity_window_seconds: int
+    journal_scan_limit: int
+    high_interest_scan_limit: int
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -61,8 +68,11 @@ class CaesarConsoleHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/stats":
             stats = build_stats(
                 read_latest(self.latest_path),
-                read_jsonl_tail(self.high_interest_path, 500),
+                read_jsonl_tail(self.journal_path, self.journal_scan_limit),
+                read_jsonl_tail(self.high_interest_path, self.high_interest_scan_limit),
                 read_json(self.node_registry_path),
+                read_json(self.learning_plan_path),
+                self.activity_window_seconds,
             )
             return self.write_json(stats)
 
@@ -116,25 +126,112 @@ def read_jsonl_tail(path: Path, limit: int) -> list[dict]:
     return [json.loads(line) for line in lines[-limit:]][::-1]
 
 
-def build_stats(latest: dict, high_interest_records: list[dict], node_registry: dict) -> dict:
-    latest_records = list(latest.values())
+def record_time_ms(record: dict) -> int:
+    if "received_at_ms" in record:
+        return int(record["received_at_ms"])
+    if "timestamp_ms" in record:
+        return int(record["timestamp_ms"])
+    envelope = record.get("envelope", {})
+    body = envelope.get("body", {})
+    return int(body.get("timestamp_ms", 0))
+
+
+def record_body(record: dict) -> dict:
+    return record.get("envelope", {}).get("body", {})
+
+
+def build_stats(
+    latest: dict,
+    journal_records: list[dict],
+    high_interest_records: list[dict],
+    node_registry: dict,
+    learning_plan: dict,
+    activity_window_seconds: int,
+) -> dict:
+    now_ms = int(time.time() * 1000)
+    active_cutoff_ms = now_ms - (activity_window_seconds * 1000)
+    latest_records = [
+        record
+        for record in latest.values()
+        if record_time_ms(record) >= active_cutoff_ms and record_body(record)
+    ]
+    recent_journal_records = [
+        record
+        for record in journal_records
+        if record_time_ms(record) >= active_cutoff_ms and record_body(record)
+    ]
+    recent_high_interest_records = [
+        record
+        for record in high_interest_records
+        if record_time_ms(record) >= active_cutoff_ms and record_body(record)
+    ]
+
     node_counts = Counter(
-        record["envelope"]["body"]["node_id"]
+        record_body(record)["node_id"]
         for record in latest_records
-        if "envelope" in record and "body" in record["envelope"]
     )
     threat_counts = Counter(
-        record["envelope"]["body"]["threat_level"]
+        record_body(record)["threat_level"]
         for record in latest_records
-        if "envelope" in record and "body" in record["envelope"]
+    )
+    modality_counts = Counter(
+        str(modality)
+        for record in latest_records
+        for modality in record_body(record).get("contributing_modalities", [])
+    )
+    site_counts = Counter(
+        record_body(record).get("site", "unknown")
+        for record in latest_records
     )
 
+    registered_nodes = node_registry.get("nodes", [])
+    registered_node_count = len(registered_nodes)
+    active_node_count = len(node_counts)
+    active_high_interest_track_ids = {
+        record_body(record)["track_id"]
+        for record in latest_records
+        if record_body(record).get("threat_level") == "high-interest"
+    }
+    recent_high_interest_track_ids = {
+        record_body(record)["track_id"]
+        for record in recent_high_interest_records
+        if record_body(record).get("track_id")
+    }
+    activity_window_minutes = max(activity_window_seconds / 60.0, 1.0)
+    throughput_events_per_min = len(recent_journal_records) / activity_window_minutes
+    anomaly_probability = (
+        len(active_high_interest_track_ids) / len(latest_records) if latest_records else 0.0
+    )
+    node_health_ratio = (
+        active_node_count / registered_node_count if registered_node_count else 0.0
+    )
+    fed_round = learning_plan.get("federated_round", {})
+    federated_participant_count = len(fed_round.get("participants", []))
+    fed_alignment = (
+        federated_participant_count / registered_node_count if registered_node_count else 0.0
+    )
+    last_detection_ms = max((record_time_ms(record) for record in latest_records), default=None)
+
     return {
+        "activity_window_seconds": activity_window_seconds,
+        "active_cutoff_ms": active_cutoff_ms,
         "latest_track_count": len(latest_records),
-        "high_interest_recent_count": len(high_interest_records),
+        "high_interest_recent_count": len(recent_high_interest_track_ids),
+        "active_high_interest_count": len(active_high_interest_track_ids),
         "node_counts": dict(node_counts),
         "threat_counts": dict(threat_counts),
-        "registered_node_count": len(node_registry.get("nodes", [])),
+        "modality_counts": dict(modality_counts),
+        "site_counts": dict(site_counts),
+        "registered_node_count": registered_node_count,
+        "active_node_count": active_node_count,
+        "throughput_events_per_min": round(throughput_events_per_min, 2),
+        "anomaly_probability": round(anomaly_probability, 4),
+        "node_health_ratio": round(node_health_ratio, 4),
+        "fed_alignment": round(fed_alignment, 4),
+        "federated_participant_count": federated_participant_count,
+        "recent_journal_count": len(recent_journal_records),
+        "last_detection_ms": last_detection_ms,
+        "stale": not latest_records,
     }
 
 
@@ -150,6 +247,9 @@ def main() -> int:
     handler.node_registry_path = Path(args.node_registry)
     handler.governance_audit_path = Path(args.governance_audit)
     handler.static_dir = Path(__file__).with_name("static")
+    handler.activity_window_seconds = args.activity_window_seconds
+    handler.journal_scan_limit = args.journal_scan_limit
+    handler.high_interest_scan_limit = args.high_interest_scan_limit
 
     server = ThreadingHTTPServer((args.host, args.port), handler)
     print(f"Caesar console listening on http://{args.host}:{args.port}")
