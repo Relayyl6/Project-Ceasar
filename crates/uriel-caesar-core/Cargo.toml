@@ -11,3 +11,9 @@ hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
+snow.workspace = true
+serialport = "4.9.0"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rppal = "0.17.1"
+cpal = "0.15.2"

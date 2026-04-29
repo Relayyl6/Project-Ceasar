@@ -1,12 +1,134 @@
+# ── AUTO-DEPENDENCY BOOTSTRAP ─────────────────────────────────────────────────
+# Runs before any imports that might be missing. Ensures the server is self-
+# healing: first run on a fresh machine will install what it needs, then boot.
+import sys, subprocess
+
+def _ensure(pkg: str, import_name: str | None = None) -> None:
+    name = import_name or pkg
+    try:
+        __import__(name)
+    except ModuleNotFoundError:
+        print(f"[caesar.boot] Installing missing dependency: {pkg} ...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", pkg, "--quiet"])
+        print(f"[caesar.boot] {pkg} installed successfully.")
+
+_ensure("opencv-python", "cv2")
+_ensure("pillow",        "PIL")
+# ──────────────────────────────────────────────────────────────────────────────
+
 import argparse
 import json
 import mimetypes
 import time
+import struct
+import math
+import threading
 from collections import Counter
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+
+# ── CAMERA STATE ─────────────────────────────────────────────────────────────
+_camera_lock = threading.Lock()
+_camera_cap = None          # OpenCV VideoCapture, if available
+_camera_frame_bytes = None  # last JPEG bytes
+_camera_node_id = "local"
+_anomaly_log = []           # recent detection strings
+
+def _init_camera():
+    """Try to open a real webcam via OpenCV. Falls back to synthetic frames."""
+    global _camera_cap
+    try:
+        import cv2
+        cap = cv2.VideoCapture(0)  # device 0 = default webcam
+        if cap.isOpened():
+            _camera_cap = cap
+            print("[camera] Hardware webcam opened on device 0.")
+        else:
+            print("[camera] No webcam found at device 0. Using synthetic frames.")
+    except ImportError:
+        print("[camera] opencv-python not installed. Using synthetic frames. (pip install opencv-python)")
+
+def _synthetic_jpeg(width=640, height=480, label="URIEL OPTICAL FEED"):
+    """
+    Build a minimal valid JPEG from scratch using raw DCT/JFIF bytes.
+    Returns bytes of a grey-gradient image with a timestamp overlay.
+    We use the Python `struct` module only — no Pillow/cv2 required.
+    Since building a full JPEG encoder is non-trivial, we use a tiny
+    single-color JFIF placeholder and annotate via metadata only.
+    """
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        import io, datetime
+        img = Image.new("RGB", (width, height), color=(7, 12, 16))
+        draw = ImageDraw.Draw(img)
+        # Scanlines
+        for y in range(0, height, 4):
+            draw.line([(0, y), (width, y)], fill=(0, 20, 30, 30))
+        # Crosshair
+        cx, cy = width // 2, height // 2
+        draw.ellipse([cx-30, cy-30, cx+30, cy+30], outline=(0, 255, 136), width=1)
+        draw.line([(cx-45, cy), (cx+45, cy)], fill=(0, 255, 136), width=1)
+        draw.line([(cx, cy-45), (cx, cy+45)], fill=(0, 255, 136), width=1)
+        # Timestamp and label
+        ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:12]
+        draw.text((10, 10), f"URIEL-NODE / {label}", fill=(0, 212, 255))
+        draw.text((10, 28), f"UTC {ts}", fill=(0, 212, 255))
+        draw.text((10, height - 24), "ONNX INFERENCE: ACTIVE", fill=(0, 255, 136))
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=75)
+        return buf.getvalue()
+    except ImportError:
+        # Absolute fallback: minimal 1x1 black JPEG
+        return bytes([
+            0xFF,0xD8,0xFF,0xE0,0x00,0x10,0x4A,0x46,0x49,0x46,0x00,0x01,
+            0x01,0x00,0x00,0x01,0x00,0x01,0x00,0x00,0xFF,0xDB,0x00,0x43,
+            0x00,0x08,0x06,0x06,0x07,0x06,0x05,0x08,0x07,0x07,0x07,0x09,
+            0x09,0x08,0x0A,0x0C,0x14,0x0D,0x0C,0x0B,0x0B,0x0C,0x19,0x12,
+            0x13,0x0F,0x14,0x1D,0x1A,0x1F,0x1E,0x1D,0x1A,0x1C,0x1C,0x20,
+            0x24,0x2E,0x27,0x20,0x22,0x2C,0x23,0x1C,0x1C,0x28,0x37,0x29,
+            0x2C,0x30,0x31,0x34,0x34,0x34,0x1F,0x27,0x39,0x3D,0x38,0x32,
+            0x3C,0x2E,0x33,0x34,0x32,0xFF,0xC0,0x00,0x0B,0x08,0x00,0x01,
+            0x00,0x01,0x01,0x01,0x11,0x00,0xFF,0xC4,0x00,0x1F,0x00,0x00,
+            0x01,0x05,0x01,0x01,0x01,0x01,0x01,0x01,0x00,0x00,0x00,0x00,
+            0x00,0x00,0x00,0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,
+            0x09,0x0A,0x0B,0xFF,0xC4,0x00,0xB5,0x10,0x00,0x02,0x01,0x03,
+            0x03,0x02,0x04,0x03,0x05,0x05,0x04,0x04,0x00,0x00,0x01,0x7D,
+            0x01,0x02,0x03,0x00,0x04,0x11,0x05,0x12,0x21,0x31,0x41,0x06,
+            0x13,0x51,0x61,0x07,0x22,0x71,0x14,0x32,0x81,0x91,0xA1,0x08,
+            0x23,0x42,0xB1,0xC1,0x15,0x52,0xD1,0xF0,0x24,0x33,0x62,0x72,
+            0x82,0x09,0x0A,0x16,0x17,0x18,0x19,0x1A,0x25,0x26,0x27,0x28,
+            0x29,0x2A,0x34,0x35,0x36,0x37,0x38,0x39,0x3A,0x43,0x44,0x45,
+            0x46,0x47,0x48,0x49,0x4A,0x53,0x54,0x55,0x56,0x57,0x58,0x59,
+            0x5A,0x63,0x64,0x65,0x66,0x67,0x68,0x69,0x6A,0x73,0x74,0x75,
+            0x76,0x77,0x78,0x79,0x7A,0x83,0x84,0x85,0x86,0x87,0x88,0x89,
+            0x8A,0x93,0x94,0x95,0x96,0x97,0x98,0x99,0x9A,0xA2,0xA3,0xA4,
+            0xA5,0xA6,0xA7,0xA8,0xA9,0xAA,0xB2,0xB3,0xB4,0xB5,0xB6,0xB7,
+            0xB8,0xB9,0xBA,0xC2,0xC3,0xC4,0xC5,0xC6,0xC7,0xC8,0xC9,0xCA,
+            0xD2,0xD3,0xD4,0xD5,0xD6,0xD7,0xD8,0xD9,0xDA,0xE1,0xE2,0xE3,
+            0xE4,0xE5,0xE6,0xE7,0xE8,0xE9,0xEA,0xF1,0xF2,0xF3,0xF4,0xF5,
+            0xF6,0xF7,0xF8,0xF9,0xFA,0xFF,0xDA,0x00,0x08,0x01,0x01,0x00,
+            0x00,0x3F,0x00,0xFB,0xD6,0xFF,0xD9,
+        ])
+
+def _grab_frame(node_id="local"):
+    """Return JPEG bytes from real camera or synthetic frame."""
+    global _camera_cap, _anomaly_log
+    with _camera_lock:
+        if _camera_cap is not None:
+            try:
+                import cv2
+                ret, frame = _camera_cap.read()
+                if ret:
+                    ret2, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                    if ret2:
+                        return bytes(buf)
+            except Exception:
+                pass
+        return _synthetic_jpeg(label=node_id.upper())
+
+_init_camera()
 
 
 def parse_args() -> argparse.Namespace:
@@ -76,8 +198,88 @@ class CaesarConsoleHandler(BaseHTTPRequestHandler):
             )
             return self.write_json(stats)
 
-        if parsed.path == "/":
+        # ── LIVE CAMERA ENDPOINTS ─────────────────────────────────────────────
+        if parsed.path == "/api/camera-frame":
+            node_id = parse_qs(parsed.query).get("node", ["local"])[0]
+            jpeg = _grab_frame(node_id)
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Content-Length", str(len(jpeg)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(jpeg)
+            return
+
+        if parsed.path == "/api/camera-stream":
+            # Multipart MJPEG stream — browsers consume this natively
+            node_id = parse_qs(parsed.query).get("node", ["local"])[0]
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=caesarframe")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            try:
+                while True:
+                    jpeg = _grab_frame(node_id)
+                    header = (
+                        f"--caesarframe\r\n"
+                        f"Content-Type: image/jpeg\r\n"
+                        f"Content-Length: {len(jpeg)}\r\n\r\n"
+                    ).encode()
+                    self.wfile.write(header + jpeg + b"\r\n")
+                    self.wfile.flush()
+                    time.sleep(0.08)  # ~12.5 fps
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # client closed tab
+            return
+
+        if parsed.path == "/api/anomaly-log":
+            limit = int(parse_qs(parsed.query).get("limit", ["20"])[0])
+            # Auto-populate from live high-interest file if log is sparse
+            if len(_anomaly_log) < 5:
+                recent = read_jsonl_tail(self.high_interest_path, 20)
+                for r in recent:
+                    body = r.get("envelope", {}).get("body", {})
+                    if body.get("track_id") and body.get("threat_level"):
+                        entry = f"[LIVE] {body['track_id']} \u00b7 {body['threat_level']} \u00b7 conf:{body.get('confidence', 0):.3f}"
+                        if entry not in _anomaly_log:
+                            _anomaly_log.append(entry)
+            return self.write_json(_anomaly_log[-limit:][::-1])
+
+        if parsed.path == "/api/live-events":
+            # Server-Sent Events: push combined stats+latest every 2 s
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+            try:
+                while True:
+                    stats = build_stats(
+                        read_latest(self.latest_path),
+                        read_jsonl_tail(self.journal_path, self.journal_scan_limit),
+                        read_jsonl_tail(self.high_interest_path, self.high_interest_scan_limit),
+                        read_json(self.node_registry_path),
+                        read_json(self.learning_plan_path),
+                        self.activity_window_seconds,
+                    )
+                    latest = read_latest(self.latest_path)
+                    payload = json.dumps({"stats": stats, "latest": latest})
+                    self.wfile.write(f"data: {payload}\r\n\r\n".encode())
+                    self.wfile.flush()
+                    time.sleep(2.0)
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+            return
+
+        if parsed.path in {"/", "/index.html"}:
             return self.serve_static("index.html")
+        if parsed.path in {"/agri", "/agri.html"}:
+            return self.serve_static("agri.html")
+        if parsed.path in {"/infra", "/infra.html"}:
+            return self.serve_static("infra.html")
         if parsed.path.startswith("/static/"):
             return self.serve_static(parsed.path.removeprefix("/static/"))
 

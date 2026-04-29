@@ -4,6 +4,7 @@ loop_count = 0
 fusion_window_ms = 700
 threat_threshold = 0.75
 ed25519_seed_hex = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+recon_enabled = true
 
 [location]
 site = "Bwari"
@@ -13,36 +14,58 @@ longitude = 7.3781
 [uplink]
 mode = "tcp_jsonl"
 tcp_addr = "192.168.1.50:7878"
+# Uncomment for RFD900x radio uplink:
+# mode = "uart"
+# uart_port = "/dev/ttyUSB0"
+# baud_rate = 57600
 
 [optical]
 enabled = true
+# mode = "profile_stdout" uses libcamera on Pi
 mode = "profile_stdout"
 profile = "rpi_csi_jpeg"
 camera_id = "pi-cam-front"
 width = 1280
 height = 720
 frame_interval_ms = 500
+csi_port = 0
 
 [thermal]
 enabled = true
+# mode = "command_json" runs thermal_adapter.py which reads real MLX90640 via smbus2
+# Switch --mode to "hardware" when MLX90640 is connected on I2C bus 1
 mode = "command_json"
 camera_id = "thermal-front"
-width = 640
-height = 512
+width = 32
+height = 24
 frame_interval_ms = 600
 command_program = "python3"
-command_args = ["scripts/thermal_adapter.py", "--mode", "synthetic", "--width", "640", "--height", "512"]
+command_args = ["scripts/thermal_adapter.py", "--mode", "hardware", "--bus", "1", "--address", "0x33"]
+i2c_address = "0x33"
 
 [radar]
 enabled = true
+# mode = "command_json" runs radar_adapter.py which reads real LD2450 via /dev/ttyAMA0
+# Switch --mode to "hardware" when LD2450 is connected on UART
 mode = "command_json"
 radar_id = "mmwave-front"
 point_count = 64
 frame_interval_ms = 550
 command_program = "python3"
-command_args = ["scripts/radar_adapter.py", "--mode", "synthetic", "--points", "64"]
+command_args = ["scripts/radar_adapter.py", "--mode", "hardware", "--port", "/dev/ttyAMA0", "--baud", "256000"]
+uart_data_port = "/dev/ttyAMA0"
 
 [inference]
-mode = "command_json"
-command_program = "python3"
-command_args = ["scripts/onnx_hook.py", "--model", "models/yolov8n.onnx", "--imgsz", "640", "--conf-thres", "0.30", "--iou-thres", "0.45", "--scene-width-m", "90", "--scene-depth-m", "60"]
+mode = "ort_native"
+model_yolo_world = "models/yolo_world_v2_l.onnx"
+model_gemini_er  = "models/gemini_robotics_er.onnx"
+model_seq2seq    = "models/seq2seq_thermal_lstm.onnx"
+model_pxadmm     = "models/pxadmm_anomaly_tracker.onnx"
+vocabulary       = [
+  "human intruder", "armed person", "civilian drone", "military drone",
+  "tractor", "truck", "motorcycle", "car", "animal",
+  "fire", "smoke", "explosion", "weapon", "backpack",
+  "person running", "person crouching", "crowd", "vehicle convoy"
+]
+ollama_endpoint  = "http://localhost:11434"
+ollama_model     = "llava"

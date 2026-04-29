@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>URIEL MONOLITH — Agri 4.0</title>
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;500;600;700&family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet"/>
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+  <style>
+    :root {
+      --bg: #060b0e;
+      --bg2: #09101a;
+      --bg3: #0c1620;
+      --surface: #111d26;
+      --surface2: #1a2d3a;
+      --cyan: #00d4c8;
+      --cyan-dim: rgba(0,212,200,0.1);
+      --green: #00ff88;
+      --green-dim: rgba(0,255,136,0.1);
+      --amber: #ffcc00;
+      --amber-dim: rgba(255,204,0,0.1);
+      --red: #ff4455;
+      --text: #b8d4cc;
+      --text-dim: #4a6a60;
+      --border: rgba(0,212,200,0.12);
+      --border-s: rgba(0,212,200,0.28);
+    }
+    *{margin:0;padding:0;box-sizing:border-box;}
+    html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-family:'Rajdhani',sans-serif;}
+
+    /* HEADER */
+    header{
+      position:fixed;top:0;left:0;right:0;z-index:100;height:48px;
+      display:flex;align-items:center;justify-content:space-between;
+      background:rgba(6,11,14,0.96);border-bottom:1px solid var(--border-s);
+      padding:0 24px;backdrop-filter:blur(10px);
+    }
+    .brand{font-family:'Orbitron',monospace;font-size:1rem;font-weight:900;color:var(--cyan);letter-spacing:.2em;}
+    .header-nav{display:flex;gap:0;}
+    .nav-tab{
+      padding:0 18px;height:48px;line-height:48px;
+      font-family:'Share Tech Mono',monospace;font-size:.68rem;letter-spacing:.12em;text-transform:uppercase;
+      color:var(--text-dim);cursor:pointer;border-bottom:2px solid transparent;transition:.15s;
+    }
+    .nav-tab.active{color:var(--cyan);border-bottom-color:var(--cyan);}
+    .nav-tab:hover{color:var(--cyan);}
+    .header-right{display:flex;align-items:center;gap:16px;}
+    .header-search{
+      display:flex;align-items:center;gap:8px;
+      background:var(--surface);border:1px solid var(--border);padding:6px 14px;
+      font-family:'Share Tech Mono',monospace;font-size:.65rem;color:var(--text-dim);
+    }
+    .icon-btn{width:36px;height:36px;display:flex;align-items:center;justify-content:center;color:var(--text-dim);cursor:pointer;transition:.15s;}
+    .icon-btn:hover{color:var(--cyan);}
+    .material-symbols-outlined{font-size:20px;font-variation-settings:'FILL' 0,'wght' 400;}
+
+    /* SIDEBAR */
+    aside{
+      position:fixed;left:0;top:48px;bottom:0;width:200px;z-index:50;
+      background:var(--bg2);border-right:1px solid var(--border);
+      display:flex;flex-direction:column;
+    }
+    .sidebar-header{padding:14px 16px;}
+    .strat-com-label{display:flex;align-items:center;gap:8px;margin-bottom:4px;}
+    .strat-com-bar{width:3px;height:28px;background:var(--cyan);}
+    .strat-com-text{font-family:'Orbitron',monospace;font-size:.75rem;font-weight:700;color:var(--cyan);}
+    .strat-com-sub{font-family:'Share Tech Mono',monospace;font-size:.58rem;color:var(--text-dim);letter-spacing:.15em;}
+    .sidebar-divider{height:1px;background:var(--border);margin:8px 0;}
+    .sidebar-item{
+      display:flex;align-items:center;gap:10px;padding:11px 16px;
+      font-size:.8rem;font-weight:600;letter-spacing:.04em;text-transform:uppercase;
+      color:var(--text-dim);cursor:pointer;transition:.15s;text-decoration:none;
+      border-left:3px solid transparent;
+    }
+    .sidebar-item:hover{color:var(--cyan);background:var(--cyan-dim);}
+    .sidebar-item.active{color:var(--cyan);background:var(--cyan-dim);border-left-color:var(--cyan);}
+    .sidebar-item .material-symbols-outlined{font-size:17px;}
+
+    /* MAIN */
+    main{
+      position:fixed;left:200px;top:48px;right:0;bottom:0;overflow-y:auto;background:var(--bg);
+    }
+
+    /* HERO SECTION */
+    .hero{
+      padding:20px 24px 16px;border-bottom:1px solid var(--border);
+      display:grid;grid-template-columns:1fr auto;gap:24px;align-items:start;
+    }
+    .sector-tag{
+      display:inline-flex;align-items:center;gap:6px;
+      background:var(--cyan-dim);border:1px solid var(--border-s);
+      padding:3px 10px;font-family:'Share Tech Mono',monospace;font-size:.62rem;
+      letter-spacing:.12em;text-transform:uppercase;color:var(--cyan);margin-bottom:8px;
+    }
+    .hero-title{font-family:'Orbitron',monospace;font-size:2.2rem;font-weight:900;color:#e8f4f0;letter-spacing:.05em;line-height:1;}
+    .hero-desc{font-size:.9rem;color:var(--text);margin-top:8px;line-height:1.5;max-width:480px;}
+    .hero-stats{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+    .hero-stat-card{
+      border:1px solid var(--border);padding:12px 16px;background:var(--surface);
+    }
+    .hero-stat-label{font-family:'Share Tech Mono',monospace;font-size:.6rem;letter-spacing:.12em;text-transform:uppercase;color:var(--text-dim);}
+    .hero-stat-value{font-family:'Orbitron',monospace;font-size:1.6rem;font-weight:700;color:var(--green);margin:4px 0 2px;}
+    .hero-stat-status{font-family:'Share Tech Mono',monospace;font-size:.62rem;color:var(--green);}
+    .hero-stat-value.cyan{color:var(--cyan);}
+    .hero-stat-status.cyan{color:var(--cyan);}
+
+    /* MAIN GRID */
+    .content-grid{display:grid;grid-template-columns:1fr 280px;height:calc(100vh - 48px - 120px);}
+
+    /* YIELD MAP */
+    .yield-section{padding:16px;border-right:1px solid var(--border);}
+    .section-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
+    .section-title{font-family:'Share Tech Mono',monospace;font-size:.68rem;letter-spacing:.15em;text-transform:uppercase;color:var(--text);}
+    .section-sub{font-family:'Share Tech Mono',monospace;font-size:.58rem;color:var(--text-dim);}
+    .tag{padding:3px 8px;font-family:'Share Tech Mono',monospace;font-size:.58rem;letter-spacing:.1em;text-transform:uppercase;border:1px solid;}
+    .tag-cyan{color:var(--cyan);border-color:var(--border-s);}
+    .tag-green{color:var(--green);border-color:rgba(0,255,136,.3);}
+    .yield-canvas-wrap{position:relative;background:var(--surface);height:350px;overflow:hidden;}
+    #yieldCanvas{width:100%;height:100%;}
+    .yield-anomaly-tag{
+      position:absolute;top:50%;left:50%;transform:translate(-30px,-20px);
+      background:rgba(6,11,14,.9);border:1px solid rgba(255,68,85,.5);
+      padding:4px 10px;font-family:'Share Tech Mono',monospace;font-size:.6rem;
+      color:var(--red);letter-spacing:.08em;
+    }
+    .yield-metric{
+      position:absolute;bottom:16px;left:16px;
+      background:rgba(6,11,14,.88);border:1px solid var(--border-s);padding:10px 14px;
+    }
+    .yield-metric-label{font-family:'Share Tech Mono',monospace;font-size:.58rem;color:var(--text-dim);text-transform:uppercase;}
+    .yield-metric-value{font-family:'Orbitron',monospace;font-size:1.5rem;font-weight:700;color:var(--green);margin-top:2px;}
+    .yield-bars{position:absolute;bottom:16px;right:16px;display:flex;flex-direction:column;gap:3px;}
+    .ybar{height:5px;background:var(--cyan);opacity:.8;}
+
+    /* RIGHT TELEMETRY */
+    .telemetry-panel{padding:16px;border-left:1px solid var(--border);display:flex;flex-direction:column;gap:0;}
+    .telem-card{padding:14px 0;border-bottom:1px solid var(--border);}
+    .telem-card:last-child{border-bottom:none;}
+    .telem-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;}
+    .telem-icon{width:28px;height:28px;border-radius:50%;border:1px solid var(--border-s);display:flex;align-items:center;justify-content:center;color:var(--cyan);}
+    .telem-source{font-family:'Share Tech Mono',monospace;font-size:.58rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.1em;}
+    .telem-label{font-family:'Share Tech Mono',monospace;font-size:.68rem;letter-spacing:.12em;text-transform:uppercase;color:var(--text-dim);margin-bottom:4px;}
+    .telem-value{font-family:'Orbitron',monospace;font-size:2rem;font-weight:700;color:var(--green);}
+    .telem-unit{font-size:.9rem;font-weight:400;}
+    .telem-sub{font-family:'Share Tech Mono',monospace;font-size:.6rem;color:var(--text-dim);margin-top:4px;}
+    .telem-bar{height:3px;background:var(--surface2);margin-top:8px;}
+    .telem-bar-fill{height:100%;background:var(--cyan);transition:width .8s;}
+    .telem-extra{display:flex;justify-content:space-between;font-family:'Share Tech Mono',monospace;font-size:.6rem;color:var(--text-dim);margin-top:4px;}
+
+    /* BOTTOM GRID */
+    .bottom-grid{display:grid;grid-template-columns:1fr 1fr 1fr;border-top:1px solid var(--border);}
+
+    /* AST CONTROL */
+    .ast-panel,.fed-panel,.swarm-panel{padding:16px;border-right:1px solid var(--border);}
+    .swarm-panel{border-right:none;}
+    .panel-label{
+      display:flex;align-items:center;gap:8px;font-family:'Share Tech Mono',monospace;
+      font-size:.65rem;letter-spacing:.15em;text-transform:uppercase;color:var(--text-dim);margin-bottom:12px;
+    }
+    .ast-zone-card{background:var(--surface);border:1px solid var(--border);padding:10px 12px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;}
+    .ast-zone-label{font-family:'Share Tech Mono',monospace;font-size:.6rem;color:var(--text-dim);text-transform:uppercase;}
+    .ast-zone-value{font-size:.9rem;font-weight:700;color:#e8f4f0;}
+    .ast-zone-dot{width:8px;height:8px;background:var(--green);box-shadow:0 0 6px var(--green);}
+    .ast-efficiency{display:flex;justify-content:space-between;font-family:'Share Tech Mono',monospace;font-size:.62rem;margin:10px 0 4px;}
+    .eff-bar{height:4px;background:var(--surface2);}
+    .eff-fill{height:100%;background:var(--cyan);transition:width .8s;}
+
+    /* FED LEARNING */
+    .fed-log{font-family:'Share Tech Mono',monospace;font-size:.62rem;line-height:1.8;}
+    .fed-log-line{color:var(--text-dim);}
+    .fed-log-line.active{color:var(--green);}
+    .fed-log-line.label{color:var(--cyan);}
+    .fed-metrics{display:flex;justify-content:space-between;margin-top:12px;gap:12px;}
+    .fed-metric-box{flex:1;background:var(--surface);border:1px solid var(--border);padding:8px 10px;}
+    .fed-metric-label{font-family:'Share Tech Mono',monospace;font-size:.58rem;color:var(--text-dim);text-transform:uppercase;}
+    .fed-metric-value{font-family:'Orbitron',monospace;font-size:1.2rem;font-weight:700;color:var(--green);}
+
+    /* VTOL SWARM */
+    .vtol-header{display:flex;align-items:start;justify-content:space-between;margin-bottom:12px;}
+    .vtol-title{font-family:'Orbitron',monospace;font-size:.9rem;font-weight:700;color:#e8f4f0;}
+    .vtol-status{font-family:'Share Tech Mono',monospace;font-size:.62rem;color:var(--green);background:var(--green-dim);border:1px solid rgba(0,255,136,.3);padding:2px 8px;}
+    .vtol-images{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;}
+    .vtol-img{height:80px;background:linear-gradient(135deg,#0c1a10,#0a1820);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden;}
+    .vtol-img-label{position:absolute;bottom:4px;left:4px;font-family:'Share Tech Mono',monospace;font-size:.55rem;color:var(--cyan);}
+    .vtol-stat{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border);}
+    .vtol-stat:last-child{border-bottom:none;}
+    .vtol-stat-label{font-family:'Share Tech Mono',monospace;font-size:.62rem;color:var(--text-dim);text-transform:uppercase;}
+    .vtol-stat-value{font-family:'Share Tech Mono',monospace;font-size:.68rem;color:var(--text);}
+    .vtol-bar{width:80px;height:3px;background:var(--surface2);}
+    .vtol-bar-fill{height:100%;background:var(--cyan);}
+
+    /* FOOTER */
+    footer{
+      position:fixed;bottom:0;left:200px;right:0;height:26px;
+      background:var(--bg2);border-top:1px solid var(--border);
+      display:flex;align-items:center;padding:0 16px;gap:10px;
+      font-family:'Share Tech Mono',monospace;font-size:.6rem;
+    }
+    .live-dot{width:6px;height:6px;background:var(--green);border-radius:50%;}
+    .footer-status{color:var(--green);}
+    .footer-div{color:var(--text-dim);}
+    .footer-item{color:var(--text-dim);}
+    .footer-enc{margin-left:auto;color:var(--text-dim);}
+
+    /* SCROLLBAR */
+    ::-webkit-scrollbar{width:3px;} ::-webkit-scrollbar-track{background:var(--bg);} ::-webkit-scrollbar-thumb{background:var(--surface2);}
+    @keyframes pulse-dot{0%,100%{opacity:1}50%{opacity:.4}}
+  </style>
+</head>
+<body>
+
+<!-- HEADER -->
+<header>
+  <div class="brand">URIEL MONOLITH</div>
+  <div class="header-nav">
+    <div class="nav-tab">NODE HEALTH</div>
+    <div class="nav-tab active">BWARI REGION</div>
+    <div class="nav-tab">FCT SECTOR</div>
+  </div>
+  <div class="header-right">
+    <div class="header-search">
+      <span class="material-symbols-outlined" style="font-size:15px">search</span>
+      QUERY SYSTEM…
+    </div>
+    <div class="icon-btn"><span class="material-symbols-outlined">sensors</span></div>
+    <div class="icon-btn"><span class="material-symbols-outlined">hub</span></div>
+    <div class="icon-btn"><span class="material-symbols-outlined">settings</span></div>
+    <div class="icon-btn" style="width:32px;height:32px;border-radius:50%;background:var(--surface);border:1px solid var(--border-s);overflow:hidden;">
+      <span class="material-symbols-outlined">person</span>
+    </div>
+  </div>
+</header>
+
+<!-- SIDEBAR -->
+<aside>
+  <div class="sidebar-header">
+    <div class="strat-com-label">
+      <div class="strat-com-bar"></div>
+      <div>
+        <div class="strat-com-text">STRAT-COM</div>
+        <div class="strat-com-sub">V-01 S.W.A.R.M.</div>
+      </div>
+    </div>
+  </div>
+  <div class="sidebar-divider"></div>
+  <a href="/" class="sidebar-item">
+    <span class="material-symbols-outlined">shield</span> TROOP DEFENSE
+  </a>
+  <a href="/infra" class="sidebar-item">
+    <span class="material-symbols-outlined">construction</span> INFRASTRUCTURE RESILIENCE
+  </a>
+  <a href="/agri" class="sidebar-item active">
+    <span class="material-symbols-outlined">agriculture</span> AGRI 4.0
+  </a>
+</aside>
+
+<!-- MAIN -->
+<main>
+  <!-- HERO -->
+  <div class="hero">
+    <div>
+      <div class="sector-tag">SECTOR: FCT-BWARI &nbsp; LAT: 9.2882° N | LONG: 7.3821° E</div>
+      <div class="hero-title">PROJECT CAESAR</div>
+      <div class="hero-desc">Multi-agent precision agriculture network. Real-time inference via Distributed Gaussian Processes and Federated LSTM convergence.</div>
+    </div>
+    <div class="hero-stats">
+      <div class="hero-stat-card">
+        <div class="hero-stat-label">System Integrity</div>
+        <div class="hero-stat-value" id="heroIntegrity">--</div>
+        <div class="hero-stat-status" id="heroStatus">--</div>
+      </div>
+      <div class="hero-stat-card">
+        <div class="hero-stat-label">Swarm Sync</div>
+        <div class="hero-stat-value cyan" id="heroSwarm">ACTIVE: --</div>
+        <div class="hero-stat-status cyan">UNITS</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CONTENT GRID -->
+  <div class="content-grid">
+    <!-- YIELD SURFACE -->
+    <div class="yield-section">
+      <div class="section-header">
+        <div>
+          <div class="section-title">YIELD PREDICTION SURFACE</div>
+          <div class="section-sub">Distributed Gaussian Process Visualization [σ=0.15]</div>
+        </div>
+        <div style="display:flex;gap:6px;">
+          <div class="tag tag-cyan">3D RENDER</div>
+          <div class="tag tag-green">REAL-TIME</div>
+        </div>
+      </div>
+      <div class="yield-canvas-wrap">
+        <canvas id="yieldCanvas"></canvas>
+        <div class="yield-anomaly-tag">BWARI-092: ANOMALY</div>
+        <div class="yield-metric">
+          <div class="yield-metric-label">MAX PROJECTED YIELD</div>
+          <div class="yield-metric-value" id="maxYield">-- t/ha</div>
+        </div>
+        <div class="yield-bars" id="yieldBars"></div>
+      </div>
+    </div>
+
+    <!-- TELEMETRY PANEL -->
+    <div class="telemetry-panel">
+      <div class="telem-card">
+        <div class="telem-header">
+          <div class="telem-icon"><span class="material-symbols-outlined" style="font-size:16px">water_drop</span></div>
+          <div class="telem-source">TELEMETRY: NODE 44</div>
+        </div>
+        <div class="telem-label">SOIL MOISTURE</div>
+        <div class="telem-value"><span id="soilMoisture">--</span><span class="telem-unit"> % VWC</span></div>
+        <div class="telem-bar"><div class="telem-bar-fill" id="soilBar" style="width:0%"></div></div>
+      </div>
+      <div class="telem-card">
+        <div class="telem-header">
+          <div class="telem-icon"><span class="material-symbols-outlined" style="font-size:16px">satellite_alt</span></div>
+          <div class="telem-source">SATELLITE FUSION</div>
+        </div>
+        <div class="telem-label">NDVI INDEX</div>
+        <div class="telem-value" style="font-size:1.8rem;"><span id="ndviVal">--</span> <span style="font-size:.85rem;color:var(--green)">VIGOR</span></div>
+        <div class="telem-extra"><span>OPTIMAL RANGE</span><span id="ndviOverlap">-- OVERLAP</span></div>
+        <div class="telem-bar"><div class="telem-bar-fill" id="ndviBar" style="width:0%"></div></div>
+      </div>
+      <div class="telem-card">
+        <div class="telem-header">
+          <div class="telem-icon"><span class="material-symbols-outlined" style="font-size:16px">thermostat</span></div>
+          <div class="telem-source">ATMOSPHERIC</div>
+        </div>
+        <div class="telem-label">HUMIDITY/TEMP</div>
+        <div class="telem-value"><span id="humidVal">--</span><span class="telem-unit"> RH%</span></div>
+        <div class="telem-sub">↑ <span id="humidDelta">--</span> FROM PREVIOUS 1H EPOCH</div>
+        <div class="telem-bar"><div class="telem-bar-fill" id="humidBar" style="width:0%;background:var(--amber)"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- BOTTOM GRID -->
+  <div class="bottom-grid">
+    <!-- AST CONTROL -->
+    <div class="ast-panel">
+      <div class="panel-label"><span class="material-symbols-outlined" style="font-size:15px">settings_input_antenna</span> AST CONTROL</div>
+      <div class="ast-zone-card">
+        <div>
+          <div class="ast-zone-label">ACTIVE ZONE</div>
+          <div class="ast-zone-value" id="astZone">--</div>
+        </div>
+        <div class="ast-zone-dot"></div>
+      </div>
+      <div class="ast-zone-card">
+        <div>
+          <div class="ast-zone-label">WATER SAVINGS</div>
+          <div class="ast-zone-value" id="waterSavings">--</div>
+        </div>
+        <span class="material-symbols-outlined" style="color:var(--green);font-size:18px">trending_up</span>
+      </div>
+      <div class="ast-efficiency">
+        <span>AST EFFICIENCY</span>
+        <span id="astEff">--</span>
+      </div>
+      <div class="eff-bar"><div class="eff-fill" id="astEffBar" style="width:0%"></div></div>
+    </div>
+
+    <!-- FEDERATED LEARNING -->
+    <div class="fed-panel">
+      <div class="panel-label"><span class="material-symbols-outlined" style="font-size:15px">hub</span> FEDERATED LEARNING</div>
+      <div class="fed-log" id="fedLog">
+        <div class="fed-log-line active">&gt; INITIALIZING LOCAL GRADIENT…</div>
+        <div class="fed-log-line label">&gt; MODEL: LSTM-CROP-STRESS-V4</div>
+        <div class="fed-log-line">&gt; BATCH SIZE: 512</div>
+        <div class="fed-log-line">&gt; EPOCH <span id="fedEpoch">--</span>: LOSS=<span id="fedLossVal">--</span></div>
+        <div class="fed-log-line active">&gt; CONVERGENCE ACHIEVED: <span id="fedConv">--</span></div>
+        <div class="fed-log-line">&gt; DISTRIBUTING UPDATE TO EDGE NODES…</div>
+        <div class="fed-log-line">&gt; SYNCING GLOBAL AGGREGATOR…</div>
+      </div>
+      <div class="fed-metrics">
+        <div class="fed-metric-box">
+          <div class="fed-metric-label">CONFIDENCE</div>
+          <div class="fed-metric-value" id="fedConfidence">--</div>
+        </div>
+        <div class="fed-metric-box">
+          <div class="fed-metric-label">NODES CONNECTED</div>
+          <div class="fed-metric-value" id="fedNodes">-- / --</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- VTOL SWARM -->
+    <div class="swarm-panel">
+      <div class="vtol-header">
+        <div>
+          <span class="material-symbols-outlined" style="font-size:16px;color:var(--cyan);vertical-align:middle">flight</span>
+          <span class="vtol-title"> ARCHER VTOL SWARM</span>
+        </div>
+        <div class="vtol-status">MISSION ACTIVE</div>
+      </div>
+      <div class="vtol-images">
+        <div class="vtol-img">
+          <svg width="100%" height="100%" viewBox="0 0 120 80" style="opacity:.7">
+            <path d="M20 60 Q40 20 60 15 Q80 20 100 60" stroke="#00d4c8" fill="none" stroke-width=".8"/>
+            <path d="M0 70 L120 70" stroke="#1a2d3a" stroke-width=".5"/>
+            <circle cx="60" cy="15" r="3" fill="#00ff88" opacity=".8"/>
+          </svg>
+          <div class="vtol-img-label">VTOL-A1 / FIELD SCAN</div>
+        </div>
+        <div class="vtol-img">
+          <svg width="100%" height="100%" viewBox="0 0 120 80" style="opacity:.7">
+            <path d="M10 70 Q30 30 60 25 Q90 30 110 70" stroke="#00d4c8" fill="none" stroke-width=".8" stroke-dasharray="4 2"/>
+            <line x1="0" y1="45" x2="120" y2="45" stroke="#1a2d3a" stroke-width=".5"/>
+          </svg>
+          <div class="vtol-img-label">VTOL-A2 / IRRIGATION</div>
+        </div>
+      </div>
+      <div class="vtol-stat">
+        <div class="vtol-stat-label">VTOL-A1 BATTERY</div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <div class="vtol-bar"><div class="vtol-bar-fill" id="vBat1" style="width:0%"></div></div>
+          <div class="vtol-stat-value" id="vBat1Val">--</div>
+        </div>
+      </div>
+      <div class="vtol-stat">
+        <div class="vtol-stat-label">VTOL-A2 SIGNAL</div>
+        <div class="vtol-stat-value" id="vSig2">--</div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<!-- FOOTER -->
+<footer>
+  <div class="live-dot" style="animation:pulse-dot 1.4s ease-in-out infinite"></div>
+  <span class="footer-status">SYSTEM NOMINAL</span>
+  <div class="footer-div">|</div>
+  <span class="footer-item">AGRI-LINK ACTIVE</span>
+  <div class="footer-div">|</div>
+  <span class="footer-item">DEFENSE-GRID: SECURE</span>
+  <span class="footer-enc">ENC: AES-256-XTS</span>
+</footer>
+
+<style>
+@keyframes pulse-dot{0%,100%{opacity:1}50%{opacity:.4}}
+</style>
+
+<script src="/static/ceasar-api.js"></script>
+<script src="/static/agri.js"></script>
+</body>
+</html>

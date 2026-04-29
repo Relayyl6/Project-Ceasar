@@ -1,453 +1,480 @@
 <!DOCTYPE html>
-<html class="dark" lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta content="width=device-width, initial-scale=1.0" name="viewport" />
-    <title>AEGIS COMMAND - Caesar Console</title>
-    <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
-    <link
-      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
-      rel="stylesheet"
-    />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap"
-      rel="stylesheet"
-    />
-    <script id="tailwind-config">
-      tailwind.config = {
-        darkMode: "class",
-        theme: {
-          extend: {
-            colors: {
-              "surface-dim": "#0a0e14",
-              "secondary-container": "#025e16",
-              "surface-container-lowest": "#000000",
-              tertiary: "#ffd16c",
-              primary: "#50e1f9",
-              secondary: "#9df197",
-              "on-background": "#f1f3fc",
-              "surface-container-highest": "#20262f",
-              surface: "#0a0e14",
-              "outline-variant": "#44484f",
-              background: "#0a0e14",
-              "on-surface-variant": "#a8abb3",
-              "surface-container-low": "#0f141a",
-              outline: "#72757d",
-              "error-dim": "#d7383b",
-              "surface-container-high": "#1b2028",
-              "surface-container": "#151a21",
-              error: "#ff716c",
-              "on-surface": "#f1f3fc",
-            },
-            fontFamily: {
-              headline: ["Space Grotesk"],
-              body: ["Inter"],
-              label: ["Space Grotesk"],
-              mono: ["JetBrains Mono"],
-            },
-            borderRadius: {
-              DEFAULT: "0px",
-              lg: "0px",
-              xl: "0px",
-              full: "9999px",
-            },
-          },
-        },
-      };
-    </script>
-    <link rel="stylesheet" href="/static/styles.css" />
-    <style>
-      @keyframes spin { to { transform: rotate(360deg); } }
-      .spinner { animation: spin 1s linear infinite; }
-      @keyframes pulse-dot { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
-      .pulse-dot { animation: pulse-dot 1.4s ease-in-out infinite; }
-      @keyframes slide-in-top {
-        from { transform: translateY(-100%); opacity: 0; }
-        to   { transform: translateY(0);    opacity: 1; }
-      }
-      .slide-in-top { animation: slide-in-top 0.25s ease-out; }
-    </style>
-  </head>
-  <body class="bg-surface text-on-surface font-body overflow-hidden">
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>URIEL COMMAND — Caesar Console</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;500;600;700&family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet"/>
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+  <style>
+    :root {
+      --bg: #070c10;
+      --bg2: #0b1118;
+      --bg3: #0f1620;
+      --surface: #121b24;
+      --surface2: #1a2535;
+      --cyan: #00d4ff;
+      --cyan-dim: rgba(0,212,255,0.15);
+      --green: #00ff88;
+      --green-dim: rgba(0,255,136,0.12);
+      --amber: #ffaa00;
+      --amber-dim: rgba(255,170,0,0.12);
+      --red: #ff3344;
+      --red-dim: rgba(255,51,68,0.12);
+      --text: #c8d8e8;
+      --text-dim: #5a7080;
+      --border: rgba(0,212,255,0.12);
+      --border-solid: rgba(0,212,255,0.25);
+    }
+    * { margin:0; padding:0; box-sizing:border-box; }
+    html,body { height:100%; overflow:hidden; background:var(--bg); color:var(--text); font-family:'Rajdhani',sans-serif; }
 
-    <!-- ─── Offline banner ─────────────────────────────────────────────── -->
-    <div
-      id="offlineBanner"
-      class="hidden fixed top-16 left-0 right-0 z-[60] slide-in-top lg:left-64"
-      style="background:rgba(255,113,108,0.12);border-bottom:1px solid rgba(255,113,108,0.35);"
-    >
-      <div class="flex items-center justify-between px-4 py-2 lg:px-6">
-        <div class="flex items-center gap-3">
-          <span class="material-symbols-outlined text-error text-sm" style="font-variation-settings:'FILL' 1">wifi_off</span>
-          <span class="font-mono text-[0.68rem] uppercase tracking-[0.1em] text-error">
-            Server unreachable on localhost:8090 — displaying last known data. Auto-reconnecting…
-          </span>
-        </div>
-        <button
-          id="retryBtn"
-          class="hidden flex items-center gap-1.5 border border-error/40 px-3 py-1 font-mono text-[0.65rem] uppercase tracking-[0.1em] text-error hover:bg-error/10 transition-colors"
-        >
-          <span class="material-symbols-outlined text-sm">refresh</span> Retry Now
-        </button>
+    /* ── HEADER ── */
+    header {
+      position:fixed; top:0; left:0; right:0; z-index:100;
+      height:48px; display:flex; align-items:center; justify-content:space-between;
+      background:rgba(7,12,16,0.95); border-bottom:1px solid var(--border-solid);
+      padding:0 20px; backdrop-filter:blur(10px);
+    }
+    .brand { font-family:'Orbitron',monospace; font-size:1.1rem; font-weight:900; color:var(--cyan); letter-spacing:.2em; }
+    .header-nav { display:flex; gap:0; }
+    .nav-tab {
+      padding:0 20px; height:48px; line-height:48px; font-family:'Share Tech Mono',monospace;
+      font-size:.7rem; letter-spacing:.15em; text-transform:uppercase; color:var(--text-dim);
+      cursor:pointer; border-bottom:2px solid transparent; transition:.15s;
+    }
+    .nav-tab.active { color:var(--cyan); border-bottom-color:var(--cyan); }
+    .nav-tab:hover { color:var(--cyan); }
+    .header-right { display:flex; align-items:center; gap:16px; }
+    .conn-badge {
+      display:flex; align-items:center; gap:8px;
+      font-family:'Share Tech Mono',monospace; font-size:.65rem; letter-spacing:.1em; text-transform:uppercase;
+      padding:4px 12px; border:1px solid var(--border-solid); color:var(--text-dim);
+    }
+    .conn-dot { width:8px; height:8px; border-radius:50%; background:var(--green); box-shadow:0 0 8px var(--green); animation:pulse-dot 1.4s ease-in-out infinite; }
+    @keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:.4} }
+    .icon-btn { width:36px; height:36px; display:flex; align-items:center; justify-content:center; color:var(--text-dim); cursor:pointer; transition:.15s; }
+    .icon-btn:hover { color:var(--cyan); }
+    .material-symbols-outlined { font-size:20px; font-variation-settings:'FILL' 0,'wght' 400; }
+
+    /* ── SIDEBAR ── */
+    aside {
+      position:fixed; left:0; top:48px; bottom:0; width:220px; z-index:50;
+      background:var(--bg2); border-right:1px solid var(--border);
+      display:flex; flex-direction:column;
+    }
+    .sidebar-header { padding:16px 20px 12px; }
+    .sidebar-title { font-family:'Orbitron',monospace; font-size:.85rem; font-weight:700; color:var(--cyan); }
+    .sidebar-sub { font-family:'Share Tech Mono',monospace; font-size:.6rem; color:var(--text-dim); letter-spacing:.2em; margin-top:2px; }
+    .sidebar-divider { height:1px; background:var(--border); margin:4px 0; }
+    .sidebar-item {
+      display:flex; align-items:center; gap:10px; padding:11px 20px;
+      font-size:.82rem; font-weight:600; letter-spacing:.05em; text-transform:uppercase;
+      color:var(--text-dim); cursor:pointer; transition:.15s; text-decoration:none;
+      border-left:3px solid transparent;
+    }
+    .sidebar-item:hover { color:var(--cyan); background:var(--cyan-dim); }
+    .sidebar-item.active { color:var(--cyan); background:var(--cyan-dim); border-left-color:var(--cyan); }
+    .sidebar-item .material-symbols-outlined { font-size:18px; }
+    .sidebar-bottom { margin-top:auto; padding:12px 16px; border-top:1px solid var(--border); }
+    .sys-override-btn {
+      width:100%; padding:10px; background:transparent; border:1px solid var(--border-solid);
+      color:var(--cyan); font-family:'Share Tech Mono',monospace; font-size:.7rem; letter-spacing:.15em;
+      text-transform:uppercase; cursor:pointer; transition:.15s;
+    }
+    .sys-override-btn:hover { background:var(--cyan-dim); }
+
+    /* ── MAIN ── */
+    main {
+      position:fixed; left:220px; top:48px; right:0; bottom:0;
+      overflow-y:auto; background:var(--bg); padding:0;
+    }
+
+    /* ── METRIC STRIP ── */
+    .metric-strip {
+      display:grid; grid-template-columns:repeat(4,1fr);
+      border-bottom:1px solid var(--border);
+    }
+    .metric-card {
+      padding:16px 20px; border-right:1px solid var(--border);
+    }
+    .metric-card:last-child { border-right:none; }
+    .metric-label { font-family:'Share Tech Mono',monospace; font-size:.62rem; letter-spacing:.12em; text-transform:uppercase; color:var(--text-dim); }
+    .metric-value { font-family:'Orbitron',monospace; font-size:2.4rem; font-weight:900; line-height:1; margin:4px 0 2px; }
+    .metric-value.cyan { color:var(--cyan); }
+    .metric-value.green { color:var(--green); }
+    .metric-value.amber { color:var(--amber); }
+    .metric-value.white { color:#e8f4ff; }
+    .metric-unit { font-size:.75rem; font-weight:400; }
+    .metric-sub { font-family:'Share Tech Mono',monospace; font-size:.58rem; color:var(--text-dim); }
+    .metric-icon { float:right; margin-top:4px; }
+
+    /* ── MAIN GRID ── */
+    .main-grid { display:grid; grid-template-columns:1fr 300px; min-height:calc(100vh - 48px - 56px); }
+
+    /* ── MAP ── */
+    .map-panel { position:relative; }
+    #map { width:100%; height:470px; background:#0a1520; }
+    .leaflet-container { background:#08121a !important; }
+    .map-overlay-tl {
+      position:absolute; top:12px; left:12px; z-index:1000;
+      background:rgba(7,12,16,0.88); border:1px solid var(--border-solid); padding:10px 14px;
+      backdrop-filter:blur(8px); max-width:260px;
+    }
+    .map-overlay-label { font-family:'Share Tech Mono',monospace; font-size:.58rem; letter-spacing:.2em; text-transform:uppercase; color:var(--text-dim); }
+    .map-overlay-title { font-family:'Orbitron',monospace; font-size:1.3rem; font-weight:700; color:#e8f4ff; margin:4px 0; }
+    .map-overlay-desc { font-family:'Rajdhani',sans-serif; font-size:.82rem; color:var(--text); line-height:1.5; }
+    .map-legend {
+      position:absolute; bottom:12px; right:12px; z-index:1000;
+      background:rgba(7,12,16,0.88); border:1px solid var(--border-solid); padding:10px 14px;
+      backdrop-filter:blur(8px);
+    }
+    .legend-item { display:flex; align-items:center; gap:8px; font-family:'Share Tech Mono',monospace; font-size:.62rem; text-transform:uppercase; margin-bottom:6px; }
+    .legend-item:last-child { margin-bottom:0; }
+    .legend-dot { width:10px; height:10px; flex-shrink:0; }
+
+    /* ── RIGHT PANEL ── */
+    .right-panel { border-left:1px solid var(--border); display:flex; flex-direction:column; }
+    .panel-section { padding:14px 16px; border-bottom:1px solid var(--border); }
+    .panel-title { font-family:'Share Tech Mono',monospace; font-size:.62rem; letter-spacing:.15em; text-transform:uppercase; color:var(--text-dim); margin-bottom:10px; }
+
+    /* ── HEATMAP ── */
+    .heatmap-grid { display:grid; grid-template-columns:repeat(8,1fr); gap:3px; }
+    .heat-cell { aspect-ratio:1; background:#1a2535; }
+    .heatmap-footer { display:flex; justify-content:space-between; margin-top:8px; font-family:'Share Tech Mono',monospace; font-size:.58rem; color:var(--text-dim); }
+
+    /* ── CONFIDENCE BARS ── */
+    .conf-row { margin-bottom:10px; }
+    .conf-row-header { display:flex; justify-content:space-between; font-family:'Share Tech Mono',monospace; font-size:.62rem; text-transform:uppercase; margin-bottom:4px; }
+    .conf-bar { height:5px; background:#1a2535; overflow:hidden; }
+    .conf-fill { height:100%; transition:width .8s ease; }
+
+    /* ── BOTTOM GRID ── */
+    .bottom-grid { display:grid; grid-template-columns:300px 1fr; border-top:1px solid var(--border); }
+
+    /* ── LEARNING FABRIC ── */
+    .learning-panel { padding:16px; border-right:1px solid var(--border); }
+    .fed-round-label { font-family:'Share Tech Mono',monospace; font-size:.62rem; color:var(--text-dim); text-transform:uppercase; margin-bottom:6px; }
+    .fed-round-info { display:flex; justify-content:space-between; font-family:'Share Tech Mono',monospace; font-size:.7rem; }
+    .fed-segments { display:flex; gap:2px; height:18px; margin:8px 0; }
+    .fed-seg { flex:1; }
+    .rl-label { font-family:'Share Tech Mono',monospace; font-size:.62rem; color:var(--text-dim); text-transform:uppercase; margin:10px 0 6px; }
+    .rl-grid { display:grid; grid-template-columns:repeat(6,1fr); gap:4px; }
+    .rl-node {
+      aspect-ratio:1; display:flex; align-items:center; justify-content:center;
+      font-family:'Share Tech Mono',monospace; font-size:.6rem; font-weight:600;
+    }
+    .rl-footer { font-family:'Share Tech Mono',monospace; font-size:.6rem; color:var(--text-dim); margin-top:8px; }
+    .rl-footer span { color:var(--green); }
+
+    /* ── TRACK LOG ── */
+    .track-panel { padding:16px; }
+    .track-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; }
+    .track-title { font-family:'Share Tech Mono',monospace; font-size:.62rem; letter-spacing:.12em; text-transform:uppercase; color:var(--text-dim); }
+    table { width:100%; border-collapse:collapse; }
+    th { font-family:'Share Tech Mono',monospace; font-size:.58rem; letter-spacing:.08em; text-transform:uppercase; color:var(--text-dim); padding:4px 8px; border-bottom:1px solid var(--border); text-align:left; }
+    td { font-family:'Share Tech Mono',monospace; font-size:.68rem; padding:7px 8px; border-bottom:1px solid rgba(0,212,255,0.06); }
+    tr:hover td { background:var(--cyan-dim); }
+    .track-id { color:var(--cyan); }
+    .threat-hi { color:var(--red); font-weight:700; }
+    .threat-lo { color:var(--amber); }
+    .threat-none { color:var(--text-dim); }
+    .mod-icons { display:flex; gap:3px; }
+    .mod-icon { font-size:12px; }
+
+    /* ── FOOTER TICKER ── */
+    footer {
+      position:fixed; bottom:0; left:220px; right:0; height:28px;
+      background:var(--bg2); border-top:1px solid var(--border);
+      display:flex; align-items:center; padding:0 16px; gap:12px;
+      font-family:'Share Tech Mono',monospace; font-size:.62rem;
+    }
+    .ticker-live { color:var(--green); display:flex; align-items:center; gap:6px; }
+    .ticker-live-dot { width:6px; height:6px; background:var(--green); border-radius:50%; }
+    .ticker-divider { color:var(--text-dim); }
+    .ticker-label { color:var(--cyan); }
+    #tickerText { color:var(--text-dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:1; }
+    .ticker-enc { color:var(--text-dim); flex-shrink:0; }
+
+    /* ── NODE MARKER CUSTOM ── */
+    .node-marker-label {
+      background:rgba(7,12,16,0.9); border:1px solid rgba(0,212,255,0.4); padding:2px 6px;
+      font-family:'Share Tech Mono',monospace; font-size:.6rem; color:var(--cyan); text-transform:uppercase;
+      white-space:nowrap;
+    }
+    .leaflet-popup-content-wrapper { background:#0b1118; border:1px solid var(--cyan); border-radius:0; color:var(--text); font-family:'Share Tech Mono',monospace; font-size:.7rem; }
+    .leaflet-popup-tip { background:#0b1118; }
+
+    /* ── SCROLLBAR ── */
+    ::-webkit-scrollbar { width:3px; } ::-webkit-scrollbar-track { background:var(--bg); } ::-webkit-scrollbar-thumb { background:var(--surface2); }
+
+    /* ── ANIM ── */
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+    .blink { animation:blink 1s ease-in-out infinite; }
+
+    /* ── CAMERA OVERLAY ── */
+    #cameraModal {
+      display:none; position:fixed; top:48px; left:220px; right:0; bottom:0;
+      background:rgba(7,12,16,0.92); z-index:2000; backdrop-filter:blur(10px);
+      flex-direction:column; padding:20px;
+    }
+    .cam-header {
+      display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;
+      border-bottom:1px solid var(--border-solid); padding-bottom:8px;
+    }
+    .cam-title { font-family:'Orbitron',monospace; font-size:1.2rem; font-weight:700; color:var(--cyan); text-transform:uppercase; }
+    .cam-close { color:var(--text-dim); cursor:pointer; font-size:24px; transition:.15s; }
+    .cam-close:hover { color:var(--red); }
+    /* ── CAMERA STREAM ── */
+    .cam-container {
+      flex:1; border:1px solid var(--border-solid); position:relative; overflow:hidden;
+      background:#000;
+    }
+    #camStream {
+      width:100%; height:100%; object-fit:cover; display:block;
+    }
+    .cam-stream-err {
+      position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+      font-family:'Share Tech Mono',monospace; font-size:.7rem; color:var(--text-dim);
+      background:#050a10; flex-direction:column; gap:8px;
+    }
+    .cam-overlay {
+      position:absolute; inset:0;
+      background:repeating-linear-gradient(0deg, transparent, transparent 3px, rgba(0,212,255,0.03) 3px, rgba(0,212,255,0.03) 4px);
+      pointer-events:none;
+    }
+    .cam-crosshair {
+      position:absolute; top:50%; left:50%; width:60px; height:60px; transform:translate(-50%,-50%);
+      border:1px solid rgba(0,255,136,0.4); border-radius:50%; pointer-events:none;
+    }
+    .cam-crosshair::before { content:''; position:absolute; top:50%; left:-10px; right:-10px; height:1px; background:rgba(0,255,136,0.4); }
+    .cam-crosshair::after { content:''; position:absolute; left:50%; top:-10px; bottom:-10px; width:1px; background:rgba(0,255,136,0.4); }
+    .cam-box {
+      position:absolute; border:2px solid var(--red); background:rgba(255,51,68,0.15);
+      animation:pulse-box 2s infinite alternate; pointer-events:none; transition:all 0.5s ease-out;
+    }
+    .cam-box-label {
+      position:absolute; top:-20px; left:-2px; background:var(--red); color:#fff;
+      font-family:'Share Tech Mono',monospace; font-size:.6rem; padding:2px 6px; white-space:nowrap;
+    }
+    @keyframes pulse-box { 0%{box-shadow:0 0 4px var(--red);} 100%{box-shadow:0 0 16px var(--red);} }
+    .cam-sidebar {
+      position:absolute; top:20px; right:20px; width:220px; background:rgba(7,12,16,0.85);
+      border:1px solid var(--border-solid); padding:12px; backdrop-filter:blur(4px);
+    }
+    .cam-data-row { display:flex; justify-content:space-between; font-family:'Share Tech Mono',monospace; font-size:.65rem; color:var(--text); margin-bottom:8px; border-bottom:1px solid rgba(255,255,255,0.05); padding-bottom:4px;}
+  </style>
+</head>
+<body>
+
+<!-- HEADER -->
+<header>
+  <div class="brand">URIEL COMMAND</div>
+  <div class="header-nav">
+    <div class="nav-tab active" id="navRegion">BWARI, FCT</div>
+    <div class="nav-tab" id="navHealth">NODE HEALTH: <span id="hdrNodeHealth">--</span></div>
+  </div>
+  <div class="header-right">
+    <div class="conn-badge"><div class="conn-dot" id="connDot"></div><span id="connLabel">LIVE · SYNCED</span></div>
+    <div class="icon-btn"><span class="material-symbols-outlined">sensors</span></div>
+    <div class="icon-btn"><span class="material-symbols-outlined">hub</span></div>
+    <div class="icon-btn"><span class="material-symbols-outlined">account_tree</span></div>
+  </div>
+</header>
+
+<!-- SIDEBAR -->
+<aside>
+  <div class="sidebar-header">
+    <div class="sidebar-title">PROJECT CAESAR</div>
+    <div class="sidebar-sub">URIEL ORCHESTRATOR</div>
+  </div>
+  <div class="sidebar-divider"></div>
+  <a href="/agri" class="sidebar-item">
+    <span class="material-symbols-outlined">agriculture</span> AGRI 4.0
+  </a>
+  <a href="/infra" class="sidebar-item">
+    <span class="material-symbols-outlined">construction</span> INFRASTRUCTURE
+  </a>
+  <a href="/" class="sidebar-item active">
+    <span class="material-symbols-outlined">shield</span> TROOP DEFENSE
+  </a>
+  <div class="sidebar-bottom">
+    <div class="sidebar-item" style="padding:8px 4px; margin-bottom:8px;">
+      <span class="material-symbols-outlined">settings</span> SETTINGS
+    </div>
+    <div class="sidebar-item" style="padding:8px 4px; margin-bottom:12px;">
+      <span class="material-symbols-outlined">terminal</span> LOGS
+    </div>
+    <button class="sys-override-btn">SYSTEM OVERRIDE</button>
+  </div>
+</aside>
+
+<!-- MAIN -->
+<main>
+  <!-- METRIC STRIP -->
+  <div class="metric-strip">
+    <div class="metric-card">
+      <div class="metric-label">Active Mesh Tracks</div>
+      <div class="metric-icon"><span class="material-symbols-outlined" style="color:var(--cyan)">conversion_path</span></div>
+      <div class="metric-value cyan" id="mActiveTracks">--</div>
+      <div class="metric-sub">Rolling active-state count</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Regional Throughput</div>
+      <div class="metric-icon"><span class="material-symbols-outlined" style="color:var(--green)">speed</span></div>
+      <div class="metric-value green" id="mThroughput">-- <span class="metric-unit">pkt/min</span></div>
+      <div class="metric-sub" id="mThroughputSub">Semantic packets per minute</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Anomaly Probability</div>
+      <div class="metric-icon"><span class="material-symbols-outlined" style="color:var(--amber)">warning</span></div>
+      <div class="metric-value amber" id="mAnomaly">--</div>
+      <div class="metric-sub" id="mAnomalySub">High-interest share</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">FedPDM Alignment</div>
+      <div class="metric-icon"><span class="material-symbols-outlined" style="color:var(--text-dim)">analytics</span></div>
+      <div class="metric-value white" id="mAlignment">--</div>
+      <div class="metric-sub" id="mAlignmentSub">Participant coverage</div>
+    </div>
+  </div>
+
+  <!-- MAP + RIGHT PANEL -->
+  <div class="main-grid">
+    <div class="map-panel">
+      <div id="map"></div>
+      <div class="map-overlay-tl">
+        <div class="map-overlay-label">Regional Theater (Multi-Domain)</div>
+        <div class="map-overlay-title">BWARI, FCT</div>
+        <div class="map-overlay-desc" id="mapDesc">Tracking live targets across Agricultural (AST), Tactical, and Industrial domains via Gossipsub Mesh.</div>
+      </div>
+      <div class="map-legend">
+        <div class="legend-item"><div class="legend-dot" style="background:var(--cyan)"></div> PRIMARY NODE GRID</div>
+        <div class="legend-item"><div class="legend-dot" style="background:var(--green)"></div> MESH PATH (ACTIVE)</div>
+        <div class="legend-item"><div class="legend-dot" style="background:var(--amber)"></div> ANOMALY ZONE</div>
       </div>
     </div>
 
-    <!-- ─── Staleness warning ──────────────────────────────────────────── -->
-    <div
-      id="stalenessWarning"
-      class="hidden fixed z-[59] slide-in-top lg:left-64"
-      style="top:4rem;left:0;right:0;background:rgba(255,209,108,0.08);border-bottom:1px solid rgba(255,209,108,0.25);"
-    >
-      <div class="px-4 py-2 lg:px-6">
-        <span id="stalenessText" class="font-mono text-[0.65rem] uppercase tracking-[0.08em] text-tertiary"></span>
+    <div class="right-panel">
+      <div class="panel-section">
+        <div class="panel-title">pxADMM Distributed Gaussian Process</div>
+        <div class="heatmap-grid" id="heatGrid"></div>
+        <div class="heatmap-footer">
+          <span id="sigmaVal">SIGMA: --</span>
+          <span id="kernelVal">KERNEL: --</span>
+        </div>
+      </div>
+      <div class="panel-section">
+        <div class="panel-title">YOLO-World Zero-Shot Tracking (AI Model)</div>
+        <div id="yoloFeed" style="font-family:'Share Tech Mono',monospace;font-size:0.6rem;color:var(--text);height:80px;overflow-y:auto;background:var(--surface2);padding:6px;border:1px solid var(--border);margin-bottom:10px;">
+          <div style="color:var(--cyan)">> [init] YOLO-World-S / EKF Fusion</div>
+          <div style="color:var(--green)">> [prompt] "human intruder", "tractor", "drone"</div>
+          <div style="color:var(--amber)" id="yoloStatus">> Tracking anomalies via ort_native...</div>
+        </div>
+        <div class="panel-title">Threat Confidence Intervals</div>
+        <div class="conf-row">
+          <div class="conf-row-header"><span>TACTICAL THREAT</span><span id="confTT">--</span></div>
+          <div class="conf-bar"><div class="conf-fill" id="confTTBar" style="width:0%;background:var(--red)"></div></div>
+        </div>
+        <div class="conf-row">
+          <div class="conf-row-header"><span>CIV/FRIENDLY</span><span id="confCF">--</span></div>
+          <div class="conf-bar"><div class="conf-fill" id="confCFBar" style="width:0%;background:var(--green)"></div></div>
+        </div>
+        <div class="conf-row">
+          <div class="conf-row-header"><span>INFRASTRUCTURE</span><span id="confIF">--</span></div>
+          <div class="conf-bar"><div class="conf-fill" id="confIFBar" style="width:0%;background:var(--cyan)"></div></div>
+        </div>
       </div>
     </div>
+  </div>
 
-    <!-- ─── Header ────────────────────────────────────────────────────── -->
-    <header class="fixed top-0 z-50 flex h-16 w-full items-center justify-between border-b-2 border-[#1b2028] bg-[#0a0e14] px-4 lg:px-6">
-      <div class="flex items-center gap-6 lg:gap-8">
-        <h1 class="font-headline text-xl font-black uppercase tracking-[0.18em] text-[#50e1f9] lg:text-2xl">
-          AEGIS COMMAND
-        </h1>
-        <nav class="hidden gap-6 md:flex">
-          <span id="regionLabel" class="border-b-2 border-[#50e1f9] py-5 font-headline text-sm uppercase tracking-tight text-[#50e1f9]">
-            BWARI
-          </span>
-          <span id="nodeHealthLabel" class="py-5 font-headline text-sm uppercase tracking-tight text-[#a8abb3]">
-            Node Health: --
-          </span>
-          <span id="windowLabel" class="py-5 font-headline text-sm uppercase tracking-tight text-[#a8abb3]">
-            Rolling Window: --
-          </span>
-        </nav>
+  <!-- BOTTOM -->
+  <div class="bottom-grid" style="grid-template-columns:240px 1fr 240px;">
+    <!-- LEARNING FABRIC -->
+    <div class="learning-panel">
+      <div class="panel-title" style="display:flex;align-items:center;gap:8px;"><span class="material-symbols-outlined" style="font-size:14px">model_training</span> LEARNING FABRIC</div>
+      <div class="fed-round-label">FEDERATED ROUND STATUS (FEDPDM)</div>
+      <div class="fed-round-info">
+        <span id="fedRound">Round --</span>
+        <span style="color:var(--cyan)" id="fedLoss">Loss: --</span>
       </div>
+      <div class="fed-segments" id="fedSegs"></div>
+      <div class="rl-label">SWARM ROUTING (ACO/PSO MARL)</div>
+      <div class="rl-grid" id="rlGrid"></div>
+      <div class="rl-footer">Centralized Critic: <span id="criticStatus">CONVERGED</span></div>
+    </div>
 
-      <div class="flex items-center gap-2 lg:gap-3">
-        <!-- Connection badge -->
-        <div
-          id="connBadge"
-          class="hidden md:flex items-center gap-2 border px-3 py-1.5 transition-colors"
-          style="border-color:rgba(255,209,108,0.25);background:rgba(15,20,26,0.9);"
-        >
-          <!-- Refreshing spinner -->
-          <span id="refreshingSpinner" class="hidden material-symbols-outlined text-[#50e1f9] spinner" style="font-size:0.85rem;">progress_activity</span>
-          <!-- Status dot -->
-          <span id="connDot" class="h-2 w-2 rounded-full pulse-dot flex-shrink-0" style="background:#ffd16c;box-shadow:0 0 8px #ffd16c;"></span>
-          <span id="connLabel" class="font-mono text-[0.62rem] uppercase tracking-[0.1em] text-[#a8abb3] whitespace-nowrap">Connecting…</span>
-        </div>
-
-        <button class="p-2 text-[#a8abb3] transition-colors duration-75 hover:bg-[#1b2028] hover:text-[#50e1f9] active:scale-95" title="Sensor mesh">
-          <span class="material-symbols-outlined">sensors</span>
-        </button>
-        <button class="p-2 text-[#a8abb3] transition-colors duration-75 hover:bg-[#1b2028] hover:text-[#50e1f9] active:scale-95" title="Regional hub">
-          <span class="material-symbols-outlined">hub</span>
-        </button>
-        <button class="p-2 text-[#a8abb3] transition-colors duration-75 hover:bg-[#1b2028] hover:text-[#50e1f9] active:scale-95" title="Learning fabric">
-          <span class="material-symbols-outlined">account_tree</span>
-        </button>
-
-        <div class="hidden items-center gap-3 border border-[#44484f]/30 bg-surface-container-high px-3 py-1.5 md:flex">
-          <div class="flex h-8 w-8 items-center justify-center border border-[#44484f]/40 bg-[#11161d] text-[#50e1f9]">
-            <span class="material-symbols-outlined text-base">admin_panel_settings</span>
-          </div>
-          <div class="min-w-0">
-            <div class="truncate font-headline text-[0.7rem] font-bold uppercase tracking-[0.18em] text-[#f1f3fc]">Regional command</div>
-            <div id="clusterLabel" class="truncate font-mono text-[0.6rem] uppercase tracking-[0.2em] text-[#7d8694]">
-              uriel orchestrator
-            </div>
-          </div>
-        </div>
+    <!-- TRACK LOG -->
+    <div class="track-panel">
+      <div class="track-header">
+        <div class="track-title">Track Log — Active Engagements</div>
+        <div style="font-family:'Share Tech Mono',monospace;font-size:.58rem;color:var(--text-dim)" id="trackMeta">Rolling 15m window</div>
       </div>
-    </header>
+      <table>
+        <thead><tr><th>Track ID</th><th>Node</th><th>Modalities</th><th>Prob. Threat</th><th>Confidence</th><th>Timestamp</th></tr></thead>
+        <tbody id="trackBody"></tbody>
+      </table>
+    </div>
 
-    <!-- ─── Sidebar ───────────────────────────────────────────────────── -->
-    <aside class="fixed left-0 top-16 z-40 hidden h-[calc(100vh-64px)] w-64 flex-col justify-between border-r border-[#44484f]/15 bg-[#0f141a] py-4 lg:flex">
-      <div class="space-y-1">
-        <div class="mb-4 px-6 py-4">
-          <div class="font-headline text-lg font-bold uppercase text-[#50e1f9]">PROJECT CAESAR</div>
-          <div class="font-mono text-[10px] tracking-[0.35em] text-on-surface-variant">URIEL ORCHESTRATOR</div>
-        </div>
-        <button id="modeAgriculture" class="mission-link">
-          <span class="material-symbols-outlined">agriculture</span> Agri 4.0
-        </button>
-        <button id="modeInfrastructure" class="mission-link">
-          <span class="material-symbols-outlined">construction</span> Infrastructure
-        </button>
-        <button id="modeTactical" class="mission-link mission-link-active">
-          <span class="material-symbols-outlined">shield</span> Tactical Grid
-        </button>
-        <button id="modeSurveillance" class="mission-link">
-          <span class="material-symbols-outlined">visibility</span> Surveillance
-        </button>
+    <!-- LIVE ANOMALY / GOVERNANCE LOG -->
+    <div style="padding:16px;border-left:1px solid var(--border);display:flex;flex-direction:column;gap:12px;">
+      <div class="panel-title" style="display:flex;align-items:center;gap:6px;">
+        <span class="material-symbols-outlined" style="font-size:14px">emergency_home</span>
+        LIVE ANOMALY STREAM
       </div>
-
-      <div class="space-y-4 px-4">
-        <!-- Mission narrative -->
-        <div class="ghost-border bg-surface-container-low px-4 py-3">
-          <div class="font-headline text-[0.65rem] uppercase tracking-[0.25em] text-[#7d8694]">Mission Story</div>
-          <p id="missionNarrative" class="mt-2 text-sm leading-6 text-[#cfd7e4]">
-            Waiting for live mesh state.
-          </p>
-        </div>
-
-        <!-- Endpoint health panel -->
-        <div class="ghost-border bg-surface-container-low px-4 py-3">
-          <div class="mb-2 font-headline text-[0.65rem] uppercase tracking-[0.25em] text-[#7d8694]">API Endpoints</div>
-          <div id="endpointHealthPanel" class="grid grid-cols-2 gap-x-2 gap-y-1">
-            <span class="text-[#7d8694] font-mono text-[0.6rem]">Polling…</span>
-          </div>
-        </div>
-
-        <button
-          id="refreshFeed"
-          class="w-full bg-primary py-3 font-headline text-xs font-bold tracking-[0.28em] text-[#003239] transition-all hover:brightness-110 active:scale-[0.98] flex items-center justify-center gap-2"
-        >
-          <span class="material-symbols-outlined text-sm">refresh</span>
-          REFRESH FEED
-        </button>
-        <div class="border-t border-outline-variant/10 pt-4">
-          <a class="sidebar-meta-link" href="#governancePanel">
-            <span class="material-symbols-outlined text-sm">settings</span> Governance
-          </a>
-          <a class="sidebar-meta-link" href="#trackLogPanel">
-            <span class="material-symbols-outlined text-sm">terminal</span> Track Log
-          </a>
-        </div>
+      <div id="anomalyLog" style="flex:1;max-height:120px;overflow-y:auto;font-family:'Share Tech Mono',monospace;font-size:.58rem;color:var(--text);background:var(--surface2);padding:6px;border:1px solid var(--border);"></div>
+      <div class="panel-title" style="display:flex;align-items:center;gap:6px;margin-top:4px;">
+        <span class="material-symbols-outlined" style="font-size:14px">policy</span>
+        GOVERNANCE AUDIT
       </div>
-    </aside>
+      <div id="governanceLog" style="flex:1;max-height:100px;overflow-y:auto;font-family:'Share Tech Mono',monospace;font-size:.56rem;color:var(--text-dim);background:var(--surface2);padding:6px;border:1px solid var(--border);"></div>
+    </div>
+  </div>
+</main>
 
-    <!-- ─── Main ──────────────────────────────────────────────────────── -->
-    <main class="mt-16 h-[calc(100vh-64px)] overflow-y-auto bg-surface-dim px-4 pb-20 pt-6 lg:ml-64 lg:px-6">
-      <div class="grid content-start grid-cols-12 gap-6">
+  <div id="cameraModal">
+  <div class="cam-header">
+    <div class="cam-title"><span class="material-symbols-outlined" style="vertical-align:bottom;margin-right:8px;font-size:24px;">videocam</span> LIVE OPTICAL FEED: <span id="camNodeId">--</span></div>
+    <div style="display:flex;align-items:center;gap:12px;">
+      <span id="camStreamStatus" style="font-family:'Share Tech Mono',monospace;font-size:.6rem;color:var(--green);letter-spacing:.1em;">● STREAMING</span>
+      <span class="material-symbols-outlined cam-close" onclick="closeCamera()">close</span>
+    </div>
+  </div>
+  <div class="cam-container">
+    <img id="camStream" src="" alt="" onerror="this.style.display='none'; document.getElementById('camStreamFallback').style.display='flex'">
+    <div id="camStreamFallback" class="cam-stream-err" style="display:none;">
+      <span class="material-symbols-outlined" style="font-size:48px;color:var(--text-dim)">videocam_off</span>
+      <span>Camera offline — connect webcam or RPi CSI module</span>
+      <span style="color:var(--cyan);font-size:.55rem">pip install opencv-python  then restart server.py</span>
+    </div>
+    <div class="cam-overlay"></div>
+    <div class="cam-crosshair"></div>
+    <div class="cam-box" id="camTargetBox" style="top:40%;left:35%;width:120px;height:180px;">
+      <div class="cam-box-label" id="camTargetLabel">high-interest [0.94]</div>
+    </div>
+    <div class="cam-sidebar">
+      <div style="font-family:'Orbitron',monospace;color:var(--cyan);font-size:.8rem;margin-bottom:12px;border-bottom:1px solid var(--cyan);padding-bottom:4px;">YOLO-WORLD & OLLAMA</div>
+      <div class="cam-data-row"><span style="color:var(--text-dim)">INFERENCE</span><span style="color:var(--green)" id="camInferenceStatus">ACTIVE</span></div>
+      <div class="cam-data-row"><span style="color:var(--text-dim)">MODEL</span><span>yolo_world_v2_l</span></div>
+      <div class="cam-data-row"><span style="color:var(--text-dim)">FPS</span><span id="camFps">--</span></div>
+      <div class="cam-data-row"><span style="color:var(--text-dim)">TRACKS</span><span id="camTrackCount">1</span></div>
+      <div class="cam-data-row"><span style="color:var(--text-dim)">REASONING</span><span style="color:var(--amber)" id="camReasoning">"Monitoring zone"</span></div>
+    </div>
+  </div>
+</div>
 
-        <!-- Metric cards -->
-        <section class="col-span-12 grid grid-cols-1 gap-4 md:grid-cols-2 2xl:grid-cols-4">
-          <article class="metric-card">
-            <span class="metric-label">Active Mesh Tracks</span>
-            <div class="mt-2 flex items-end justify-between">
-              <span id="metricActiveTracks" class="metric-value text-primary">0</span>
-              <span class="material-symbols-outlined text-xl text-primary">conversion_path</span>
-            </div>
-            <p id="metricTrackSubtext" class="metric-subtext">Rolling active-state count</p>
-          </article>
-          <article class="metric-card">
-            <span class="metric-label">Regional Throughput</span>
-            <div class="mt-2 flex items-end justify-between gap-2">
-              <span id="metricThroughput" class="metric-value text-secondary">0</span>
-              <span class="material-symbols-outlined text-xl text-secondary">speed</span>
-            </div>
-            <p id="metricThroughputSubtext" class="metric-subtext">Semantic packets per minute</p>
-          </article>
-          <article class="metric-card">
-            <span class="metric-label">Anomaly Probability</span>
-            <div class="mt-2 flex items-end justify-between">
-              <span id="metricAnomaly" class="metric-value text-tertiary">0.00%</span>
-              <span class="material-symbols-outlined text-xl text-tertiary">warning</span>
-            </div>
-            <p id="metricAnomalySubtext" class="metric-subtext">High-interest share of active tracks</p>
-          </article>
-          <article class="metric-card">
-            <span class="metric-label">FedPDM Alignment</span>
-            <div class="mt-2 flex items-end justify-between">
-              <span id="metricAlignment" class="metric-value text-on-surface">0.00</span>
-              <span class="material-symbols-outlined text-xl text-on-surface-variant">analytics</span>
-            </div>
-            <p id="metricAlignmentSubtext" class="metric-subtext">Participant coverage over registered nodes</p>
-          </article>
-        </section>
+<!-- FOOTER -->
+<footer>
+  <div class="ticker-live"><div class="ticker-live-dot"></div> LIVE</div>
+  <div class="ticker-divider">|</div>
+  <span class="ticker-label">URIEL_STREAM:</span>
+  <span id="tickerText">Initializing telemetry stream…</span>
+  <span class="ticker-enc">SEC_ENCRYPT: AES-512-V2</span>
+</footer>
 
-        <!-- Tactical map -->
-        <section class="col-span-12 xl:col-span-8">
-          <div class="tactical-map relative h-[520px] overflow-hidden border border-outline-variant/10 bg-surface-container-lowest">
-            <div class="absolute inset-0 tactical-map-texture"></div>
-            <div class="absolute inset-0 bg-[radial-gradient(circle_at_20%_30%,rgba(80,225,249,0.12),transparent_22%),radial-gradient(circle_at_75%_65%,rgba(157,241,151,0.12),transparent_22%),linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0))]"></div>
-            <svg id="mapLinks" class="absolute inset-0 z-10 h-full w-full opacity-70"></svg>
-            <div id="mapMarkers" class="absolute inset-0 z-20"></div>
-            <div class="glass-panel absolute left-4 top-4 z-30 max-w-md border border-outline-variant/20 p-4 lg:left-6 lg:top-6">
-              <p class="font-mono text-[0.62rem] uppercase tracking-[0.35em] text-[#8a94a3]">Regional Theater</p>
-              <h2 id="mapTitle" class="mt-2 font-headline text-2xl font-black uppercase tracking-[0.08em] text-[#f1f3fc]">
-                BWARI, FCT
-              </h2>
-              <p id="mapNarrative" class="mt-3 text-sm leading-6 text-[#d6deea]">
-                Rolling tactical picture unavailable until active tracks or node registry observations arrive.
-              </p>
-            </div>
-            <div class="glass-panel absolute bottom-4 right-4 z-30 border border-outline-variant/20 p-3">
-              <div class="space-y-2">
-                <div class="flex items-center gap-2">
-                  <div class="h-3 w-3 bg-primary"></div>
-                  <span class="font-mono text-[0.65rem] uppercase">Primary Node Grid</span>
-                </div>
-                <div class="flex items-center gap-2">
-                  <div class="h-3 w-3 bg-secondary"></div>
-                  <span class="font-mono text-[0.65rem] uppercase">Mesh Path (Active)</span>
-                </div>
-                <div class="flex items-center gap-2">
-                  <div class="h-3 w-3 bg-tertiary"></div>
-                  <span class="font-mono text-[0.65rem] uppercase">Watch / Anomaly Zone</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <!-- Heatmap + Confidence -->
-        <section class="col-span-12 flex h-[520px] flex-col gap-6 xl:col-span-4">
-          <article class="ghost-border flex-1 bg-surface-container-low p-4">
-            <h3 class="mb-4 flex items-center justify-between font-headline text-xs font-bold uppercase tracking-[0.28em] text-on-surface-variant">
-              Distributed Gaussian Process
-              <span class="material-symbols-outlined text-sm">grid_view</span>
-            </h3>
-            <div id="heatmapGrid" class="grid h-[calc(100%-2rem)] grid-cols-8 gap-1"></div>
-            <div class="mt-4 flex justify-between font-mono text-[0.65rem] uppercase text-on-surface-variant">
-              <span id="sigmaValue">Sigma: 0.000</span>
-              <span id="kernelValue">Kernel: RBF-ST</span>
-            </div>
-          </article>
-          <article class="ghost-border flex-1 bg-surface-container-low p-4">
-            <h3 class="mb-4 font-headline text-xs font-bold uppercase tracking-[0.28em] text-on-surface-variant">
-              Confidence Intervals
-            </h3>
-            <div id="confidenceBars" class="space-y-4"></div>
-          </article>
-        </section>
-
-        <!-- Learning fabric -->
-        <section class="col-span-12 xl:col-span-4">
-          <article class="ghost-border h-full bg-surface-container-low p-5">
-            <h3 class="mb-6 flex items-center gap-2 font-headline text-xs font-bold uppercase tracking-[0.28em] text-on-surface-variant">
-              <span class="material-symbols-outlined text-sm">model_training</span> Learning Fabric
-            </h3>
-            <div class="space-y-6">
-              <div>
-                <label class="mb-2 block font-mono text-[0.62rem] uppercase tracking-[0.24em] text-on-surface-variant">
-                  Federated Round Status
-                </label>
-                <div id="federatedSegments" class="flex h-6 items-center gap-1"></div>
-                <div class="mt-2 flex justify-between font-mono text-[0.65rem]">
-                  <span id="federatedRoundLabel">Round: --</span>
-                  <span id="federatedLossLabel" class="text-primary">Alignment: --</span>
-                </div>
-              </div>
-              <div>
-                <label class="mb-2 block font-mono text-[0.62rem] uppercase tracking-[0.24em] text-on-surface-variant">
-                  Multi-Agent RL / Node Readiness
-                </label>
-                <div id="rlAgentGrid" class="grid grid-cols-6 gap-2"></div>
-                <div class="mt-2 font-mono text-[0.65rem] uppercase text-on-surface-variant">
-                  Central coordinator: <span id="criticStatus" class="text-secondary">IDLE</span>
-                </div>
-              </div>
-              <div class="ghost-border bg-[#11161d] p-4">
-                <div class="font-headline text-[0.65rem] uppercase tracking-[0.25em] text-[#7d8694]">Underlying story</div>
-                <p id="learningNarrative" class="mt-2 text-sm leading-6 text-[#cfd7e4]">
-                  Learning jobs will populate here as supervised, unsupervised, and reinforcement tasks are planned.
-                </p>
-              </div>
-            </div>
-          </article>
-        </section>
-
-        <!-- Track log -->
-        <section id="trackLogPanel" class="col-span-12 xl:col-span-8">
-          <article class="ghost-border bg-surface-container-low p-5">
-            <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
-              <h3 class="font-headline text-xs font-bold uppercase tracking-[0.28em] text-on-surface-variant">
-                Track Log - Active Engagements
-              </h3>
-              <span id="trackLogMeta" class="font-mono text-[0.62rem] uppercase tracking-[0.24em] text-[#7d8694]">
-                Rolling active window
-              </span>
-            </div>
-            <div class="overflow-x-auto">
-              <table class="w-full border-collapse text-left">
-                <thead>
-                  <tr class="border-b border-outline-variant/20 font-mono text-[0.62rem] uppercase text-on-surface-variant">
-                    <th class="px-2 py-3">Track ID</th>
-                    <th class="px-2 py-3">Node</th>
-                    <th class="px-2 py-3">Modalities</th>
-                    <th class="px-2 py-3">Threat Score</th>
-                    <th class="px-2 py-3">Confidence</th>
-                    <th class="px-2 py-3">Timestamp</th>
-                  </tr>
-                </thead>
-                <tbody id="trackLogBody" class="font-mono text-[0.72rem]"></tbody>
-              </table>
-            </div>
-          </article>
-        </section>
-
-        <!-- High-interest feed -->
-        <section class="col-span-12 xl:col-span-4">
-          <article class="ghost-border h-full bg-surface-container-low p-5">
-            <div class="mb-4 flex items-center justify-between">
-              <h3 class="font-headline text-xs font-bold uppercase tracking-[0.28em] text-on-surface-variant">
-                High-Interest Feed
-              </h3>
-              <span id="alertMeta" class="font-mono text-[0.62rem] uppercase tracking-[0.24em] text-[#7d8694]">
-                Rolling alert window
-              </span>
-            </div>
-            <div id="alertsFeed" class="space-y-3"></div>
-          </article>
-        </section>
-
-        <!-- Orchestration / Governance / Node Registry -->
-        <section class="col-span-12 grid grid-cols-1 gap-6 xl:grid-cols-3">
-          <article class="ghost-border bg-surface-container-low p-5">
-            <h3 class="mb-4 font-headline text-xs font-bold uppercase tracking-[0.28em] text-on-surface-variant">
-              Orchestration Plan
-            </h3>
-            <div id="orchestrationFeed" class="space-y-3"></div>
-          </article>
-
-          <article id="governancePanel" class="ghost-border bg-surface-container-low p-5">
-            <h3 class="mb-4 font-headline text-xs font-bold uppercase tracking-[0.28em] text-on-surface-variant">
-              Governance and Trust
-            </h3>
-            <div id="governanceSummary" class="space-y-2"></div>
-            <div class="mt-4 space-y-3" id="governanceFeed"></div>
-          </article>
-
-          <article class="ghost-border bg-surface-container-low p-5">
-            <h3 class="mb-4 font-headline text-xs font-bold uppercase tracking-[0.28em] text-on-surface-variant">
-              Node Registry
-            </h3>
-            <div id="nodeRegistryPanel" class="space-y-3"></div>
-          </article>
-        </section>
-
-      </div>
-    </main>
-
-    <!-- ─── Right FABs ─────────────────────────────────────────────────── -->
-    <aside class="fixed right-4 top-24 z-40 hidden flex-col gap-4 xl:flex">
-      <button class="mission-fab" title="Agriculture mode">
-        <span class="material-symbols-outlined">potted_plant</span>
-      </button>
-      <button class="mission-fab" title="Infrastructure mode">
-        <span class="material-symbols-outlined">domain</span>
-      </button>
-      <button class="mission-fab mission-fab-active" title="Tactical mode">
-        <span class="material-symbols-outlined">rocket_launch</span>
-      </button>
-    </aside>
-
-    <!-- ─── Footer ticker ──────────────────────────────────────────────── -->
-    <footer class="fixed bottom-0 left-0 right-0 z-50 flex h-8 items-center border-t border-outline-variant/10 bg-surface-container-lowest px-4 font-mono text-[0.62rem] text-on-surface-variant lg:left-64">
-      <div class="flex w-full items-center gap-4">
-        <span class="flex items-center gap-1 text-secondary">
-          <span class="h-1.5 w-1.5 bg-secondary"></span> LIVE
-        </span>
-        <span class="opacity-50">|</span>
-        <div class="flex-1 overflow-hidden whitespace-nowrap">
-          <span class="mr-2 text-primary">AEGIS_STREAM:</span>
-          <span id="tickerStream">Awaiting rolling command-layer telemetry…</span>
-        </div>
-        <span id="footerCipher" class="text-[0.58rem] uppercase tracking-[0.2em]">SIGNED ENVELOPES: ED25519</span>
-      </div>
-    </footer>
-
-    <script src="/static/app.js"></script>
-  </body>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="/static/ceasar-api.js"></script>
+<script src="/static/app.js"></script>
+</body>
 </html>

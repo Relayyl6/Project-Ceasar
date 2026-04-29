@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>URIEL MONOLITH — Infrastructure Resilience</title>
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;500;600;700&family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet"/>
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+  <style>
+    :root {
+      --bg: #070a0f;
+      --bg2: #0a0e16;
+      --surface: #0f1520;
+      --surface2: #182030;
+      --cyan: #00ccff;
+      --cyan-dim: rgba(0,204,255,0.08);
+      --green: #00ee88;
+      --green-dim: rgba(0,238,136,0.1);
+      --amber: #ffbb00;
+      --amber-dim: rgba(255,187,0,0.1);
+      --red: #ff3344;
+      --red-dim: rgba(255,51,68,0.1);
+      --text: #aac4d8;
+      --text-dim: #3a5565;
+      --border: rgba(0,204,255,0.1);
+      --border-s: rgba(0,204,255,0.22);
+    }
+    *{margin:0;padding:0;box-sizing:border-box;}
+    html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-family:'Rajdhani',sans-serif;}
+
+    /* HEADER */
+    header{
+      position:fixed;top:0;left:0;right:0;z-index:100;height:48px;
+      display:flex;align-items:center;justify-content:space-between;
+      background:rgba(7,10,15,0.96);border-bottom:1px solid var(--border-s);
+      padding:0 24px;backdrop-filter:blur(10px);
+    }
+    .brand{font-family:'Orbitron',monospace;font-size:1rem;font-weight:900;color:var(--cyan);letter-spacing:.2em;}
+    .header-nav{display:flex;gap:0;}
+    .nav-tab{padding:0 18px;height:48px;line-height:48px;font-family:'Share Tech Mono',monospace;font-size:.68rem;letter-spacing:.12em;text-transform:uppercase;color:var(--text-dim);cursor:pointer;border-bottom:2px solid transparent;transition:.15s;}
+    .nav-tab.active{color:var(--cyan);border-bottom-color:var(--cyan);}
+    .nav-tab:hover{color:var(--cyan);}
+    .header-right{display:flex;align-items:center;gap:12px;}
+    .header-search{display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--border);padding:6px 14px;font-family:'Share Tech Mono',monospace;font-size:.65rem;color:var(--text-dim);}
+    .icon-btn{width:36px;height:36px;display:flex;align-items:center;justify-content:center;color:var(--text-dim);cursor:pointer;transition:.15s;}
+    .icon-btn:hover{color:var(--cyan);}
+    .material-symbols-outlined{font-size:20px;font-variation-settings:'FILL' 0,'wght' 400;}
+
+    /* SIDEBAR */
+    aside{position:fixed;left:0;top:48px;bottom:0;width:200px;z-index:50;background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;}
+    .strat-com-label{display:flex;align-items:center;gap:8px;padding:14px 16px;}
+    .strat-com-bar{width:3px;height:28px;background:var(--cyan);}
+    .strat-com-text{font-family:'Orbitron',monospace;font-size:.75rem;font-weight:700;color:var(--cyan);}
+    .strat-com-sub{font-family:'Share Tech Mono',monospace;font-size:.58rem;color:var(--text-dim);letter-spacing:.15em;}
+    .sidebar-divider{height:1px;background:var(--border);}
+    .sidebar-item{display:flex;align-items:center;gap:10px;padding:11px 16px;font-size:.8rem;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--text-dim);cursor:pointer;transition:.15s;text-decoration:none;border-left:3px solid transparent;}
+    .sidebar-item:hover{color:var(--cyan);background:var(--cyan-dim);}
+    .sidebar-item.active{color:var(--cyan);background:var(--cyan-dim);border-left-color:var(--cyan);}
+    .sidebar-item .material-symbols-outlined{font-size:17px;}
+    .deploy-btn-wrap{margin-top:auto;padding:16px;}
+    .deploy-btn{width:100%;padding:11px;background:var(--cyan);border:none;color:#020810;font-family:'Share Tech Mono',monospace;font-size:.72rem;letter-spacing:.18em;text-transform:uppercase;cursor:pointer;font-weight:700;transition:.15s;}
+    .deploy-btn:hover{filter:brightness(1.15);}
+
+    /* MAIN */
+    main{position:fixed;left:200px;top:48px;right:0;bottom:0;overflow-y:auto;background:var(--bg);}
+
+    /* HERO HEADER */
+    .infra-hero{padding:16px 20px 12px;border-bottom:1px solid var(--border);}
+    .infra-title{font-family:'Orbitron',monospace;font-size:1.6rem;font-weight:900;color:#d8eaf8;letter-spacing:.04em;}
+    .infra-status-bar{display:flex;align-items:center;gap:16px;margin-top:8px;}
+    .status-dot{width:8px;height:8px;border-radius:50%;}
+    .status-item{display:flex;align-items:center;gap:6px;font-family:'Share Tech Mono',monospace;font-size:.62rem;text-transform:uppercase;}
+    .epoch-display{margin-left:auto;font-family:'Orbitron',monospace;font-size:.75rem;color:var(--text-dim);}
+    .epoch-value{font-family:'Orbitron',monospace;font-size:1.1rem;font-weight:700;color:var(--cyan);}
+
+    /* MAIN GRID */
+    .main-grid{display:grid;grid-template-columns:1fr 300px;}
+
+    /* FLOW MAP */
+    .map-section{position:relative;border-right:1px solid var(--border);}
+    .map-tl-tag{
+      position:absolute;top:12px;left:12px;z-index:10;
+      background:rgba(7,10,15,.9);border:1px solid var(--border-s);padding:6px 10px;
+      font-family:'Share Tech Mono',monospace;font-size:.62rem;color:var(--cyan);
+    }
+    .map-status-tags{position:absolute;top:12px;right:12px;z-index:10;display:flex;gap:6px;}
+    .map-tag{padding:4px 10px;font-family:'Share Tech Mono',monospace;font-size:.62rem;text-transform:uppercase;letter-spacing:.08em;border:1px solid;}
+    .tag-stable{color:var(--green);border-color:rgba(0,238,136,.4);background:var(--green-dim);}
+    .tag-alarm{color:var(--red);border-color:rgba(255,51,68,.4);background:var(--red-dim);}
+    #infraCanvas{width:100%;height:380px;display:block;}
+    .map-footer-label{position:absolute;bottom:10px;left:12px;font-family:'Share Tech Mono',monospace;font-size:.58rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.1em;}
+
+    /* RIGHT PANEL */
+    .right-panel{display:flex;flex-direction:column;}
+
+    /* VIBRATION CHART */
+    .vib-section{padding:14px 16px;border-bottom:1px solid var(--border);}
+    .panel-title{font-family:'Share Tech Mono',monospace;font-size:.62rem;letter-spacing:.14em;text-transform:uppercase;color:var(--text-dim);display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
+    .vib-value{font-family:'Orbitron',monospace;font-size:1.4rem;font-weight:700;color:var(--cyan);}
+    .vib-sub{font-family:'Share Tech Mono',monospace;font-size:.58rem;color:var(--text-dim);}
+    #vibCanvas{width:100%;height:100px;}
+    .vib-time-labels{display:flex;justify-content:space-between;font-family:'Share Tech Mono',monospace;font-size:.56rem;color:var(--text-dim);margin-top:4px;}
+
+    /* PRESSURE CHART */
+    .pres-section{padding:14px 16px;flex:1;}
+    #presCanvas{width:100%;height:90px;}
+    .pres-labels{display:flex;justify-content:space-between;font-family:'Share Tech Mono',monospace;font-size:.56rem;color:var(--text-dim);margin-top:4px;}
+
+    /* BOTTOM GRID */
+    .bottom-grid{display:grid;grid-template-columns:1fr 1fr 1fr;border-top:1px solid var(--border);}
+    .event-panel,.swarm-panel,.ebpf-panel{padding:14px 16px;border-right:1px solid var(--border);}
+    .ebpf-panel{border-right:none;}
+
+    /* EVENT LOG */
+    .event-item{display:flex;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);}
+    .event-item:last-child{border-bottom:none;}
+    .event-time{font-family:'Share Tech Mono',monospace;font-size:.62rem;color:var(--cyan);flex-shrink:0;text-align:right;min-width:36px;}
+    .event-time-sub{font-family:'Share Tech Mono',monospace;font-size:.56rem;color:var(--text-dim);}
+    .event-title{font-family:'Share Tech Mono',monospace;font-size:.68rem;color:#d8eaf8;font-weight:600;margin-bottom:2px;}
+    .event-desc{font-size:.78rem;color:var(--text);line-height:1.4;}
+    .event-icon{color:var(--amber);}
+
+    /* SWARM PANEL */
+    .swarm-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+    .swarm-unit{
+      background:var(--surface);border:1px solid var(--border);padding:10px;
+      display:flex;flex-direction:column;align-items:center;gap:6px;
+    }
+    .swarm-icon-ring{width:32px;height:32px;border-radius:50%;border:1px solid var(--border-s);display:flex;align-items:center;justify-content:center;position:relative;}
+    .swarm-status-dot{position:absolute;top:-2px;right:-2px;width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 5px var(--green);}
+    .swarm-unit-label{font-family:'Share Tech Mono',monospace;font-size:.62rem;color:#d8eaf8;font-weight:600;text-align:center;}
+    .swarm-unit-sub{font-family:'Share Tech Mono',monospace;font-size:.56rem;color:var(--text-dim);text-align:center;line-height:1.4;}
+
+    /* eBPF PANEL */
+    .ebpf-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
+    .ebpf-version{font-family:'Share Tech Mono',monospace;font-size:.58rem;color:var(--green);}
+    .ebpf-log{font-family:'Share Tech Mono',monospace;font-size:.6rem;line-height:1.9;}
+    .ebpf-line{color:var(--text-dim);}
+    .ebpf-line .time{color:var(--text-dim);margin-right:6px;}
+    .ebpf-line .msg{color:var(--text);}
+    .ebpf-line .active{color:var(--green);}
+    .ebpf-prompt{color:var(--cyan);}
+    .ebpf-coords{display:flex;justify-content:space-between;font-family:'Share Tech Mono',monospace;font-size:.58rem;color:var(--text-dim);margin-top:10px;border-top:1px solid var(--border);padding-top:8px;}
+
+    /* FOOTER */
+    footer{position:fixed;bottom:0;left:200px;right:0;height:26px;background:var(--bg2);border-top:1px solid var(--border);display:flex;align-items:center;padding:0 16px;gap:12px;font-family:'Share Tech Mono',monospace;font-size:.6rem;}
+    .live-dot{width:6px;height:6px;background:var(--green);border-radius:50%;animation:pulse-dot 1.4s ease-in-out infinite;}
+    @keyframes pulse-dot{0%,100%{opacity:1}50%{opacity:.4}}
+    ::-webkit-scrollbar{width:3px;} ::-webkit-scrollbar-track{background:var(--bg);} ::-webkit-scrollbar-thumb{background:var(--surface2);}
+  </style>
+</head>
+<body>
+
+<!-- HEADER -->
+<header>
+  <div class="brand">URIEL MONOLITH</div>
+  <div class="header-nav">
+    <div class="nav-tab">NODE HEALTH</div>
+    <div class="nav-tab active">BWARI REGION</div>
+    <div class="nav-tab">FCT SECTOR</div>
+  </div>
+  <div class="header-right">
+    <div class="header-search"><span class="material-symbols-outlined" style="font-size:15px">search</span> QUERY SYSTEM…</div>
+    <div class="icon-btn"><span class="material-symbols-outlined">sensors</span></div>
+    <div class="icon-btn"><span class="material-symbols-outlined">hub</span></div>
+    <div class="icon-btn"><span class="material-symbols-outlined">settings</span></div>
+    <div class="icon-btn" style="border-radius:50%;background:var(--surface);border:1px solid var(--border-s)"><span class="material-symbols-outlined">person</span></div>
+  </div>
+</header>
+
+<!-- SIDEBAR -->
+<aside>
+  <div class="strat-com-label">
+    <div class="strat-com-bar"></div>
+    <div>
+      <div class="strat-com-text">STRAT-COM</div>
+      <div class="strat-com-sub">V-01 S.W.A.R.M.</div>
+    </div>
+  </div>
+  <div class="sidebar-divider"></div>
+  <a href="/infra" class="sidebar-item active">
+    <span class="material-symbols-outlined">construction</span> INFRASTRUCTURE RESILIENCE
+  </a>
+  <a href="/" class="sidebar-item">
+    <span class="material-symbols-outlined">shield</span> TROOP DEFENSE
+  </a>
+  <a href="/agri" class="sidebar-item">
+    <span class="material-symbols-outlined">agriculture</span> AGRI 4.0
+  </a>
+  <div class="deploy-btn-wrap">
+    <button class="deploy-btn">DEPLOY ASSETS</button>
+  </div>
+</aside>
+
+<!-- MAIN -->
+<main>
+  <!-- HERO -->
+  <div class="infra-hero">
+    <div class="infra-title">PROJECT CAESAR: BWARI RESILIENCE</div>
+    <div class="infra-status-bar">
+      <div class="status-item">
+        <div class="status-dot" style="background:var(--green);box-shadow:0 0 6px var(--green)"></div>
+        <span style="color:var(--text-dim)">GRID CONNECTIVITY:</span>
+        <span style="color:var(--green)" id="gridConn">--</span>
+      </div>
+      <div class="status-item">
+        <div class="status-dot" style="background:var(--amber);box-shadow:0 0 6px var(--amber)"></div>
+        <span style="color:var(--amber)">ANOMALY DETECTED: <span id="anomalyId">--</span></span>
+      </div>
+      <div class="epoch-display">
+        CURRENT EPOCH<br>
+        <span class="epoch-value" id="epochVal">--</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- MAIN GRID -->
+  <div class="main-grid">
+    <!-- FLOW MAP -->
+    <div class="map-section">
+      <div class="map-tl-tag">
+        RE-S-88 // SECTOR 4A<br>LAT: 9.2842 // LON: 7.3820
+      </div>
+      <div class="map-status-tags">
+        <div class="map-tag tag-stable">STABLE</div>
+        <div class="map-tag tag-alarm" id="alarmTag">ALARM</div>
+      </div>
+      <canvas id="infraCanvas"></canvas>
+      <div class="map-footer-label">INFRASTRUCTURE MESH COVERAGE</div>
+    </div>
+
+    <!-- RIGHT PANEL -->
+    <div class="right-panel">
+      <div class="vib-section">
+        <div class="panel-title">
+          VIBRATION ANOMALY PROBABILITY
+          <span class="vib-value"><span id="vibVal">--</span> <span style="font-family:'Rajdhani';font-size:.75rem;color:var(--text-dim)">RMS</span></span>
+        </div>
+        <canvas id="vibCanvas"></canvas>
+        <div class="vib-time-labels"><span>T-10m</span><span>T-5m</span><span>CURRENT</span></div>
+      </div>
+      <div class="pres-section">
+        <div class="panel-title">
+          PIPELINE PRESSURE
+          <span style="font-family:'Orbitron',monospace;font-size:1.2rem;font-weight:700;color:var(--cyan)"><span id="presVal">--</span> BAR</span>
+        </div>
+        <canvas id="presCanvas"></canvas>
+        <div class="pres-labels">
+          <span>0.0 BAR</span><span>NOMINAL: 14.5</span><span>MAX: 20.0</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- BOTTOM -->
+  <div class="bottom-grid">
+    <!-- EVENTS -->
+    <div class="event-panel">
+      <div class="panel-title" style="margin-bottom:10px">
+        <span style="display:flex;align-items:center;gap:6px">
+          <span class="material-symbols-outlined event-icon" style="font-size:16px">warning</span>
+          CRITICAL EVENT LOGS
+        </span>
+      </div>
+      <div id="eventLog"></div>
+    </div>
+
+    <!-- SWARM -->
+    <div class="swarm-panel">
+      <div class="panel-title" style="margin-bottom:12px">
+        <span style="display:flex;align-items:center;gap:6px">
+          <span class="material-symbols-outlined" style="font-size:16px">precision_manufacturing</span>
+          MAINTENANCE SWARM
+        </span>
+      </div>
+      <div class="swarm-grid" id="swarmGrid"></div>
+    </div>
+
+    <!-- eBPF -->
+    <div class="ebpf-panel">
+      <div class="ebpf-header">
+        <div class="panel-title" style="margin-bottom:0">
+            <span style="display:flex;align-items:center;gap:6px">
+            <span class="material-symbols-outlined" style="font-size:15px">terminal</span>
+            URIEL KERNEL TELEMETRY
+          </span>
+        </div>
+        <div class="ebpf-version" id="ebpfVersion">--</div>
+      </div>
+      <div class="ebpf-log" id="ebpfLog"></div>
+      <div class="ebpf-prompt">&gt; LISTENING ON INTERFACE ETH_RE_0…</div>
+      <div class="ebpf-coords">
+        <span>LAT: 9.2842 N</span>
+        <span>LON: 7.3820 E</span>
+        <span>ALT: 1,244m</span>
+      </div>
+    </div>
+  </div>
+</main>
+
+<!-- FOOTER -->
+<footer>
+  <div class="live-dot"></div>
+  <span style="color:var(--green)">SYSTEM NOMINAL</span>
+  <span style="color:var(--text-dim)">|</span>
+  <span style="color:var(--text-dim)">INFRA-LINK ACTIVE</span>
+  <span style="color:var(--text-dim)">|</span>
+  <span style="color:var(--text-dim)">DEFENSE-GRID: SECURE</span>
+  <span style="margin-left:auto;color:var(--text-dim)">ENC: AES-256-XTS</span>
+</footer>
+
+<script src="/static/ceasar-api.js"></script>
+<script src="/static/infra.js"></script>
+</body>
+</html>

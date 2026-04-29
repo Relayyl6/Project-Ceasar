@@ -2,6 +2,7 @@ mod camera;
 mod config;
 mod fusion;
 mod inference;
+mod recon;
 mod sensors;
 mod uplink;
 
@@ -44,13 +45,18 @@ async fn main() -> Result<()> {
     let (fused_tx, mut fused_rx) = mpsc::channel::<FusedTrack>(128);
 
     let _sensor_tasks = spawn_sources(settings.clone(), sensor_bus.clone());
+    
+    // Spawn passive reconnaissance engine
+    let recon = recon::ReconWorker::new(settings.clone());
+    recon.spawn();
+    
     spawn_optical_worker(
         settings.clone(),
         sensor_bus.resubscribe_optical(),
         observation_tx.clone(),
     );
-    spawn_thermal_worker(sensor_bus.resubscribe_thermal(), observation_tx.clone());
-    spawn_radar_worker(sensor_bus.resubscribe_radar(), observation_tx.clone());
+    spawn_thermal_worker(settings.clone(), sensor_bus.resubscribe_thermal(), observation_tx.clone());
+    spawn_radar_worker(settings.clone(), sensor_bus.resubscribe_radar(), observation_tx.clone());
     FusionEngine::spawn(settings.clone(), observation_rx, fused_tx);
 
     let mut published = 0usize;

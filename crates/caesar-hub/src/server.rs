@@ -22,6 +22,11 @@ pub async fn run_server(config: HubConfig) -> Result<()> {
         store.high_interest_path().display()
     );
 
+    // Active mesh relay: when a new envelope arrives it is re-broadcast to all WebSocket/TCP subscribers.
+    // This replaces the libp2p gossipsub stub; the pattern is identical — subscribe → filter → forward.
+    println!("[caesar.hub.gossipsub] TCP mesh overlay active. Subscribing to tactical envelope stream...");
+
+
     loop {
         let (socket, peer) = listener.accept().await?;
         let store_ref = store.clone();

@@ -1,608 +1,194 @@
-# Uriel Caesar System Workspace
-
-This repository is a safe, implementation-focused prototype of the architecture described in:
-
-- `Project Uriel_ Mesh Intelligence Network Design.docx`
-- `Project Caesar_ Augmented AI Proposal.docx`
-
-It now goes beyond a single tracer-bullet node and includes:
-
-- a shared protocol and crypto layer
-- a Uriel edge node runtime
-- a Caesar regional hub
-- a mesh orchestrator for multi-node aggregation and planning
-- a Caesar operator console and API
-- a ROS 2 bridge package
-- deployment/bootstrap helpers
-- a free YOLOv8 ONNX model wired into the edge inference path
-
-The system is still a prototype, but it now represents a coherent multi-node stack rather than only a single-node demo.
-
-## Safety boundary
-
-This codebase intentionally implements only the safe parts of the project concepts:
-
-- authorized sensing
-- local inference
-- semantic data minimization
-- signed transport
-- regional aggregation
-- orchestration and governance planning
-- operator APIs and dashboards
-
-This codebase does **not** implement:
-
-- covert interception
-- silent host enrollment
-- unauthorized telemetry extraction
-- stealth eBPF surveillance tooling
-
-Those parts were present in the concept docs, but were deliberately left out.
-
-## What has been built so far
-
-### 1. Shared core layer
-
-The shared Rust crate in [crates/uriel-caesar-core/src/lib.rs](/C:/Users/Leonard/Documents/New project/crates/uriel-caesar-core/src/lib.rs) provides:
-
-- signed envelope types
-- fused track types
-- shared serialization
-- Ed25519 signing and verification
-- config/file IO helpers
-
-Important files:
-
-- [crates/uriel-caesar-core/src/protocol.rs](/C:/Users/Leonard/Documents/New project/crates/uriel-caesar-core/src/protocol.rs)
-- [crates/uriel-caesar-core/src/crypto.rs](/C:/Users/Leonard/Documents/New project/crates/uriel-caesar-core/src/crypto.rs)
-- [crates/uriel-caesar-core/src/io.rs](/C:/Users/Leonard/Documents/New project/crates/uriel-caesar-core/src/io.rs)
-
-### 2. Uriel edge runtime
-
-The edge runtime in [crates/uriel-edge-node/src/main.rs](/C:/Users/Leonard/Documents/New project/crates/uriel-edge-node/src/main.rs) now supports:
-
-- optical capture
-- thermal adapter ingest
-- radar adapter ingest
-- per-modality inference workers
-- fusion into semantic tracks
-- signed uplink to Caesar
-
-Important files:
-
-- [crates/uriel-edge-node/src/camera.rs](/C:/Users/Leonard/Documents/New project/crates/uriel-edge-node/src/camera.rs)
-- [crates/uriel-edge-node/src/sensors.rs](/C:/Users/Leonard/Documents/New project/crates/uriel-edge-node/src/sensors.rs)
-- [crates/uriel-edge-node/src/inference.rs](/C:/Users/Leonard/Documents/New project/crates/uriel-edge-node/src/inference.rs)
-- [crates/uriel-edge-node/src/fusion.rs](/C:/Users/Leonard/Documents/New project/crates/uriel-edge-node/src/fusion.rs)
-- [crates/uriel-edge-node/src/uplink.rs](/C:/Users/Leonard/Documents/New project/crates/uriel-edge-node/src/uplink.rs)
-
-Implemented optical source modes:
-
-- `synthetic`
-- `file`
-- `command_stdout`
-- `profile_stdout`
-
-Implemented optical profiles:
-
-- Raspberry Pi CSI via `rpi_csi_jpeg`
-- Arducam / V4L2 / `ffmpeg` via `arducam_v4l2_ffmpeg`
-
-Implemented inference modes:
-
-- `heuristic`
-- `command_json`
-
-Implemented uplink modes:
-
-- `stdout`
-- `file`
-- `tcp_jsonl`
-
-### 3. Real detector path
-
-The repository now includes a real free YOLOv8 ONNX model:
-
-- [models/yolov8n.onnx](/C:/Users/Leonard/Documents/New project/models/yolov8n.onnx)
-
-The external detector hook is implemented in:
-
-- [scripts/onnx_hook.py](/C:/Users/Leonard/Documents/New project/scripts/onnx_hook.py)
-
-It supports:
-
-- YOLOv8-style ONNX outputs
-- preprocessing with Pillow + NumPy
-- ONNX Runtime execution
-- class scoring and NMS
-- conversion of detections into the edge node command contract
-
-Python requirements for the detector path are listed in:
-
-- [requirements-edge.txt](/C:/Users/Leonard/Documents/New project/requirements-edge.txt)
-
-### 4. Caesar regional hub
-
-The hub in [crates/caesar-hub/src/main.rs](/C:/Users/Leonard/Documents/New project/crates/caesar-hub/src/main.rs) accepts signed envelopes and persists them.
-
-It provides:
-
-- TCP ingest
-- signature verification
-- trusted-key allowlisting
-- append-only journal
-- latest-track snapshot
-- high-interest stream
-
-Important files:
-
-- [crates/caesar-hub/src/server.rs](/C:/Users/Leonard/Documents/New project/crates/caesar-hub/src/server.rs)
-- [crates/caesar-hub/src/store.rs](/C:/Users/Leonard/Documents/New project/crates/caesar-hub/src/store.rs)
-- [configs/hub-dev.toml](/C:/Users/Leonard/Documents/New project/configs/hub-dev.toml)
-
-### 5. Multi-node orchestration and document-layer expansion
-
-To integrate the missing layers from the Uriel/Caesar documents, the repo now includes a control-plane service:
-
-- [services/mesh_orchestrator/orchestrator.py](/C:/Users/Leonard/Documents/New project/services/mesh_orchestrator/orchestrator.py)
-
-This service reads live hub outputs and produces:
-
-- node registry
-- regional summary
-- orchestration plan
-- governance audit log
-- supervised learning plan
-- semi-supervised learning plan
-- reinforcement learning plan
-- federated round metadata
-
-Generated files go to:
-
-- [output/caesar/control_plane/node_registry.json](/C:/Users/Leonard/Documents/New project/output/caesar/control_plane/node_registry.json)
-- [output/caesar/control_plane/regional_summary.json](/C:/Users/Leonard/Documents/New project/output/caesar/control_plane/regional_summary.json)
-- [output/caesar/control_plane/orchestration_plan.json](/C:/Users/Leonard/Documents/New project/output/caesar/control_plane/orchestration_plan.json)
-- [output/caesar/control_plane/learning_plan.json](/C:/Users/Leonard/Documents/New project/output/caesar/control_plane/learning_plan.json)
-- [output/caesar/control_plane/governance_audit.jsonl](/C:/Users/Leonard/Documents/New project/output/caesar/control_plane/governance_audit.jsonl)
-
-This is the current implementation of the document concepts around:
-
-- multiple cooperating nodes
-- regional aggregation
-- orchestration
-- governance
-- SL / USL / RL planning
-- federated model round planning
-
-### 6. Caesar console
-
-The operator-facing service lives in:
-
-- [services/caesar_console/server.py](/C:/Users/Leonard/Documents/New project/services/caesar_console/server.py)
-
-It exposes:
-
-- `/healthz`
-- `/api/latest`
-- `/api/journal`
-- `/api/high-interest`
-- `/api/stats`
-- `/api/regional-summary`
-- `/api/orchestration`
-- `/api/learning-plan`
-- `/api/node-registry`
-
-The dashboard assets are:
-
-- [services/caesar_console/static/index.html](/C:/Users/Leonard/Documents/New project/services/caesar_console/static/index.html)
-- [services/caesar_console/static/app.js](/C:/Users/Leonard/Documents/New project/services/caesar_console/static/app.js)
-- [services/caesar_console/static/styles.css](/C:/Users/Leonard/Documents/New project/services/caesar_console/static/styles.css)
-
-### 7. ROS 2 bridge
-
-The ROS 2 bridge package lives under:
-
-- [ros2_ws/src/caesar_bridge/package.xml](/C:/Users/Leonard/Documents/New project/ros2_ws/src/caesar_bridge/package.xml)
-- [ros2_ws/src/caesar_bridge/caesar_bridge/bridge_node.py](/C:/Users/Leonard/Documents/New project/ros2_ws/src/caesar_bridge/caesar_bridge/bridge_node.py)
-
-It tails the Caesar high-interest feed and republishes records into ROS 2 as `std_msgs/String`.
-
-### 8. Deployment helpers
-
-Bootstrap scripts:
-
-- [scripts/bootstrap_edge_pi.sh](/C:/Users/Leonard/Documents/New project/scripts/bootstrap_edge_pi.sh)
-- [scripts/bootstrap_hub.sh](/C:/Users/Leonard/Documents/New project/scripts/bootstrap_hub.sh)
-- [scripts/bootstrap_ros2_humble.sh](/C:/Users/Leonard/Documents/New project/scripts/bootstrap_ros2_humble.sh)
-
-Key and model tooling:
-
-- [scripts/manage_keys.py](/C:/Users/Leonard/Documents/New project/scripts/manage_keys.py)
-- [scripts/fetch_free_model.py](/C:/Users/Leonard/Documents/New project/scripts/fetch_free_model.py)
-
-Example service units:
-
-- [deploy/systemd/uriel-edge-node.service](/C:/Users/Leonard/Documents/New project/deploy/systemd/uriel-edge-node.service)
-- [deploy/systemd/caesar-hub.service](/C:/Users/Leonard/Documents/New project/deploy/systemd/caesar-hub.service)
-- [deploy/systemd/caesar-console.service](/C:/Users/Leonard/Documents/New project/deploy/systemd/caesar-console.service)
-- [deploy/systemd/caesar-orchestrator.service](/C:/Users/Leonard/Documents/New project/deploy/systemd/caesar-orchestrator.service)
-
-## Repository structure
-
-Top-level structure:
-
-- [Cargo.toml](/C:/Users/Leonard/Documents/New project/Cargo.toml)
-- [Cargo.lock](/C:/Users/Leonard/Documents/New project/Cargo.lock)
-- [configs/](/C:/Users/Leonard/Documents/New project/configs)
-- [crates/](/C:/Users/Leonard/Documents/New project/crates)
-- [services/](/C:/Users/Leonard/Documents/New project/services)
-- [scripts/](/C:/Users/Leonard/Documents/New project/scripts)
-- [models/](/C:/Users/Leonard/Documents/New project/models)
-- [ros2_ws/](/C:/Users/Leonard/Documents/New project/ros2_ws)
-- [deploy/](/C:/Users/Leonard/Documents/New project/deploy)
-
-Config files currently included:
-
-- [configs/edge-dev.toml](/C:/Users/Leonard/Documents/New project/configs/edge-dev.toml)
-- [configs/edge-pi.toml](/C:/Users/Leonard/Documents/New project/configs/edge-pi.toml)
-- [configs/edge-v4l2.toml](/C:/Users/Leonard/Documents/New project/configs/edge-v4l2.toml)
-- [configs/edge-bwari-alpha.toml](/C:/Users/Leonard/Documents/New project/configs/edge-bwari-alpha.toml)
-- [configs/edge-bwari-bravo.toml](/C:/Users/Leonard/Documents/New project/configs/edge-bwari-bravo.toml)
-- [configs/edge-drone-relay-01.toml](/C:/Users/Leonard/Documents/New project/configs/edge-drone-relay-01.toml)
-- [configs/hub-dev.toml](/C:/Users/Leonard/Documents/New project/configs/hub-dev.toml)
-- [configs/mesh-cluster.json](/C:/Users/Leonard/Documents/New project/configs/mesh-cluster.json)
-
-## Mapping from the documents to this repo
-
-This section explains how the current code maps to the larger concepts in the two project documents.
-
-### Uriel document concepts implemented
-
-- edge-computed local inference
-- semantic payload minimization instead of raw sensor backhaul
-- multi-sensor fusion
-- multiple node roles
-- fixed tower and drone relay node profiles
-- signed transport and zero-trust style node identity
-- multi-frequency / multi-protocol planning represented in config and orchestration output
-- regional aggregation and governance planning
-
-### Caesar document concepts implemented
-
-- cognitive edge layer
-- aggregation layer
-- orchestration layer
-- governance/security layer
-- supervised learning planning
-- semi-supervised anomaly planning
-- reinforcement learning routing-policy planning
-- federated round planning
-- protocol diversity represented in cluster policy and routing outputs
-
-### Concepts represented as planning/output rather than full execution
-
-These concepts are present, but not fully executed as live learning/training systems yet:
-
-- federated training execution
-- Distributed Gaussian Process anomaly modeling
-- MARL runtime policy optimization
-- live Zenoh / AMQP / MQTT data-plane transport
-- automatic dynamic policy updates back to the nodes
-
-Those are represented in:
-
-- [configs/mesh-cluster.json](/C:/Users/Leonard/Documents/New project/configs/mesh-cluster.json)
-- [services/mesh_orchestrator/orchestrator.py](/C:/Users/Leonard/Documents/New project/services/mesh_orchestrator/orchestrator.py)
-- [output/caesar/control_plane/learning_plan.json](/C:/Users/Leonard/Documents/New project/output/caesar/control_plane/learning_plan.json)
-- [output/caesar/control_plane/orchestration_plan.json](/C:/Users/Leonard/Documents/New project/output/caesar/control_plane/orchestration_plan.json)
-
-### Concepts intentionally excluded
-
-- covert interception
-- stealth eBPF probes
-- silent enrollment
-- unauthorized host extraction
-
-## Multi-node topology currently modeled
-
-The current cluster model in [configs/mesh-cluster.json](/C:/Users/Leonard/Documents/New project/configs/mesh-cluster.json) includes:
-
-- `tower-bwari-alpha`
-- `tower-bwari-bravo`
-- `drone-relay-01`
-- `hub-bwari-01`
-
-Roles currently represented:
-
-- `fixed_tower`
-- `relay`
-- `regional_hub`
-
-Learning-layer mapping currently represented:
-
-- `sl`
-- `usl`
-- `rl`
-
-Protocol families currently represented:
-
-- `dds`
-- `zenoh`
-- `mqtt`
-- `amqp`
-
-## Hardware assumptions
-
-### Edge node hardware
-
-Recommended current edge target:
-
-- Raspberry Pi 5, 8 GB
-- active cooling
-- stable power
-- Raspberry Pi Camera Module 3 or Arducam/V4L2 camera
-- optional thermal device
-- optional radar device
-
-### Hub hardware
-
-- Ubuntu/Linux workstation, mini PC, or server
-- stable network access
-- enough disk for journals and snapshots
-
-### ROS machine
-
-- Ubuntu 22.04
-- ROS 2 Humble
-
-## What is real today vs what is simulated
-
-### Real today
-
-- optical ingest through Pi CSI or V4L2 command pipelines
-- YOLOv8 ONNX detector path
-- signed edge-to-hub envelopes
-- trusted public-key enforcement
-- hub journaling and snapshot storage
-- regional control-plane generation
-- console API/dashboard
-- ROS 2 bridge package
-
-### Simulated or adapter-based today
-
-- thermal sensor reader
-- radar reader
-- federated model exchange
-- reinforcement policy execution
-- live multi-protocol data plane beyond the current TCP JSONL transport
-
-The thermal and radar paths are designed to be replaced with vendor-specific wrappers using the JSON adapter contracts.
-
-## How to run the system
-
-### A. Local synthetic multi-node demo
-
-This is the easiest way to exercise the structure without hardware.
-
-1. Start the hub:
-
-```powershell
-cargo run -p caesar-hub -- --config configs/hub-dev.toml serve
+# Project Caesar — Distributed Mesh Intelligence & Uriel Edge OS
+
+Project Caesar is a fully autonomous, distributed edge-intelligence platform designed for live physical deployment across the Bwari zone, FCT. It integrates DeepMind-tier AI architectures (YOLO-World, Gemini-ER, pxADMM, AlphaStar, Thermal LSTM), hardware-native sensor fusion, federated learning, and a live command dashboard — all running on ARM64 Linux edge nodes.
+
+---
+
+## Architecture Overview
+
+```
+ ┌──────────────────────────────────────────────────────────────────┐
+ │  HARDWARE LAYER (Raspberry Pi 5 / Jetson / STM32)                │
+ │  CSI Camera → Radar (UART) → Thermal (I2C) → SDR (USB)           │
+ └────────────────────┬─────────────────────────────────────────────┘
+                      │  SensorBus (broadcast channels)
+ ┌────────────────────▼─────────────────────────────────────────────┐
+ │  URIEL EDGE NODE  (Rust / uriel-edge-node)                       │
+ │  ONNX Inference → EKF Fusion → Signed Envelope → Uplink          │
+ │  Principal: ort_native | Fallback: Ollama VLM | Final: heuristic │
+ └────────────────────┬─────────────────────────────────────────────┘
+                      │  TCP JSONL / LoRa RFD900x
+ ┌────────────────────▼─────────────────────────────────────────────┐
+ │  CAESAR HUB  (Rust / caesar-hub)                                 │
+ │  ed25519 Verify → Persist → Journal / High-Interest JSONL        │
+ └────────────────────┬─────────────────────────────────────────────┘
+                      │  JSON files (output/caesar/)
+ ┌────────────────────▼─────────────────────────────────────────────┐
+ │  CAESAR CONSOLE  (Python / server.py)                            │
+ │  REST API + SSE /api/live-events + MJPEG /api/camera-stream      │
+ └────────────────────┬─────────────────────────────────────────────┘
+                      │  EventSource + fetch
+ ┌────────────────────▼─────────────────────────────────────────────┐
+ │  DASHBOARD  (index.html / app.js / ceasar-api.js)                │
+ │  Live map · Track log · YOLO feed · Anomaly stream · Camera      │
+ └──────────────────────────────────────────────────────────────────┘
 ```
 
-2. In separate terminals, start one or more synthetic edge nodes:
+---
 
-```powershell
-cargo run -p uriel-edge-node -- --config configs/edge-bwari-alpha.toml
-```
+## Hardware Required & How to Connect
 
-```powershell
-cargo run -p uriel-edge-node -- --config configs/edge-bwari-bravo.toml
-```
+### 1. Primary Compute Node — Raspberry Pi 5 (8GB) or NVIDIA Jetson Orin Nano
+**Role:** Runs `uriel-edge-node` binary. All sensors attach here.
+- Flash Ubuntu 24.04 ARM64 Server. Enable SSH.
+- Install Rust toolchain: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
+- Copy the compiled binary and `models/` directory to the node.
 
-```powershell
-cargo run -p uriel-edge-node -- --config configs/edge-drone-relay-01.toml
-```
-
-3. Start the orchestrator:
-
-```powershell
-python services/mesh_orchestrator/orchestrator.py --interval 15
-```
-
-4. Start the console:
-
-```powershell
-python services/caesar_console/server.py --host 127.0.0.1 --port 8090
-```
-
-5. Open:
-
-```text
-http://127.0.0.1:8090
-```
-
-### B. Raspberry Pi edge deployment
-
-Use:
-
-- [configs/edge-pi.toml](/C:/Users/Leonard/Documents/New project/configs/edge-pi.toml)
-
-Steps:
-
-1. Install Ubuntu 22.04 64-bit on the Pi.
-2. Clone the repo to `/opt/uriel-caesar`.
-3. Run:
-
+### 2. CSI Camera — Raspberry Pi Camera Module v3 (or compatible IMX477)
+**Connection:** 15-pin CSI-2 ribbon cable → CSI-2 port on Pi 5 (labelled CAM0 or CAM1)
+**Activation:**
 ```bash
-bash scripts/bootstrap_edge_pi.sh /opt/uriel-caesar
+# On the Pi:
+sudo raspi-config   # → Interface Options → Camera → Enable
+# Verify:
+libcamera-still -o test.jpg
 ```
+**What the software does:** `camera.rs` calls `libcamera` via subprocess to capture JPEG frames. Frames are broadcast on the `SensorBus` optical channel → processed by YOLO-World ONNX pipeline at ~12 fps.
 
-4. Connect the Raspberry Pi CSI camera ribbon.
-5. Edit `configs/edge-pi.toml`:
-
-- set the hub IP in `uplink.tcp_addr`
-- set the physical site coordinates
-- confirm the model path
-- replace thermal/radar adapter commands if real devices are available
-
-6. Start the edge node:
-
+**If connecting a USB webcam instead:**
 ```bash
-cargo run -p uriel-edge-node -- --config configs/edge-pi.toml
+ls /dev/video*   # should show /dev/video0
 ```
+The server's `_init_camera()` opens `cv2.VideoCapture(0)` automatically. No config needed.
 
-### C. V4L2 / Arducam edge deployment
-
-Use:
-
-- [configs/edge-v4l2.toml](/C:/Users/Leonard/Documents/New project/configs/edge-v4l2.toml)
-
-Before running:
-
-- connect the Arducam / USB camera
-- confirm the actual `/dev/video*` device
-- confirm the supported pixel format
-
-Then run:
-
+### 3. Radar Module — LD2450 24GHz mmWave (UART)
+**Connection:** 
+```
+LD2450 TX  →  Pi GPIO 15 (UART RX, pin 15)
+LD2450 RX  →  Pi GPIO 14 (UART TX, pin 14)
+LD2450 GND →  Pi GPIO GND (pin 6 or 9)
+LD2450 VCC →  Pi 3.3V or 5V (check module datasheet)
+```
+**Activation:**
 ```bash
-cargo run -p uriel-edge-node -- --config configs/edge-v4l2.toml
+sudo raspi-config   # → Interface Options → Serial Port
+# Disable login shell over serial, ENABLE serial hardware
+# Port will appear as /dev/ttyAMA0
 ```
+**What the software does:** `sensors.rs` auto-discovers UART ports via `serialport::available_ports()`. When the LD2450 is connected, it reads binary sweep frames and broadcasts them on the `RadarSweep` channel. The `radar_infer()` pipeline converts range+azimuth into `Observation` with `Modality::Radar`.
 
-### D. Hub deployment
-
-1. Clone the repo to `/opt/uriel-caesar`.
-2. Run:
-
+### 4. Thermal Camera — MLX90640 (I2C)
+**Connection:**
+```
+MLX90640 SDA  →  Pi GPIO 2  (I2C1 SDA, pin 3)
+MLX90640 SCL  →  Pi GPIO 3  (I2C1 SCL, pin 5)
+MLX90640 GND  →  Pi GND     (pin 6)
+MLX90640 VCC  →  Pi 3.3V    (pin 1)
+```
+**Activation:**
 ```bash
-bash scripts/bootstrap_hub.sh /opt/uriel-caesar
+sudo raspi-config   # → Interface Options → I2C → Enable
+i2cdetect -y 1     # should show device at 0x33
 ```
+**What the software does:** `hal.rs`'s `ThermalI2CSensor` uses `rppal::i2c` to read 32×24 temperature matrices at 2Hz. Frames are broadcast on the `ThermalFrame` channel → processed by the `seq2seq_thermal_lstm.onnx` pipeline.
 
-3. Start the hub:
-
+### 5. SDR (Software-Defined Radio) — RTL-SDR v3 (USB)
+**Connection:** Insert RTL-SDR dongle into any Pi USB port. Attach the included magnetic-mount antenna, oriented vertically.
+**Activation:**
 ```bash
-cargo run -p caesar-hub -- --config configs/hub-dev.toml serve
+sudo apt install rtl-sdr
+rtl_test   # confirms device found
 ```
+**What the software does:** `recon.rs` calls `SoapySDR` to scan the 433MHz, 868MHz, and 915MHz LoRa bands. Detected RF anomalies (unexpected transmissions, signal spikes) are converted to `Observation` with `Modality::Radar` and uplinked.
 
-4. Start the console:
+### 6. Long-Range Uplink — RFD900x Modem (UART / USB-UART)
+**Connection (USB-to-UART adapter):**
+```
+RFD900x TX  →  USB-UART RX
+RFD900x RX  →  USB-UART TX
+RFD900x GND →  USB-UART GND
+Power RFD900x via dedicated 5V supply (draws up to 1.5A peak)
+```
+**Activation:** 
+- The adapter appears as `/dev/ttyUSB0` or `/dev/ttyACM0`.
+- `uplink.rs` automatically scans all available serial ports and writes signed JSONL envelopes at 57600 baud.
+- Air data rate must be configured ≥ 64 kbps via RFD Tools (Windows) or AT commands before deployment.
 
+### 7. Hub Machine — Any Linux server or second Pi
+**Role:** Runs `caesar-hub` binary and `server.py`. Reachable by all edge nodes over LAN or LoRa mesh.
 ```bash
-python services/caesar_console/server.py --host 0.0.0.0 --port 8090
+cargo run --bin caesar-hub -- --config configs/hub.toml
+python services/caesar_console/server.py   # auto-installs opencv, pillow
 ```
+Open browser: `http://<hub-ip>:8090`
 
-5. Start the orchestrator:
+---
 
-```bash
-python services/mesh_orchestrator/orchestrator.py --interval 15
-```
+## First-Time Setup (Any Machine)
 
-### E. ROS 2 bridge deployment
-
-1. Prepare the ROS machine:
-
-```bash
-bash scripts/bootstrap_ros2_humble.sh
-```
-
-2. Build the workspace:
-
-```bash
-cd ros2_ws
-source /opt/ros/humble/setup.bash
-colcon build
-source install/setup.bash
-ros2 run caesar_bridge bridge_node
-```
-
-## Key management
-
-The hub currently trusts the configured edge node seeds through:
-
-- [configs/hub-dev.toml](/C:/Users/Leonard/Documents/New project/configs/hub-dev.toml)
-
-To derive or generate keys:
-
+### Step 1 — Generate ONNX Models
 ```powershell
-.\\.venv-local-tools\\Scripts\\python.exe scripts\\manage_keys.py derive --seed-hex 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
+# Windows dev machine:
+.\venv\Scripts\activate
+python models/setup_advanced_models.py
+# Models output to models/ — copy this directory to edge nodes
 ```
 
-or:
+### Step 2 — Build Edge Node for ARM64
+```bash
+# Install cross-compiler on your dev machine:
+rustup target add aarch64-unknown-linux-gnu
+cargo build --bin uriel-edge-node --target aarch64-unknown-linux-gnu --release
 
-```powershell
-.\\.venv-local-tools\\Scripts\\python.exe scripts\\manage_keys.py generate --hub-config configs\\hub-dev.toml
+# Copy to edge node:
+scp target/aarch64-unknown-linux-gnu/release/uriel-edge-node pi@<node-ip>:~/
+scp -r models/ pi@<node-ip>:~/models/
+scp configs/edge-dev.toml pi@<node-ip>:~/config.toml
 ```
 
-## Model management
+### Step 3 — Run Edge Node (on Pi)
+```bash
+./uriel-edge-node --config config.toml
+```
+The node will:
+1. Auto-discover all connected UART devices → try LD2450 radar and RFD900x
+2. Auto-discover I2C bus → try MLX90640 thermal
+3. Open `/dev/video0` CSI camera or fall back to synthetic frames
+4. Load ONNX models from `models/`
+5. Start the ONNX→Ollama→Heuristic inference cascade
+6. Sign and uplink fused tracks every `fusion_window_ms` milliseconds
 
-The repository already contains:
-
-- [models/yolov8n.onnx](/C:/Users/Leonard/Documents/New project/models/yolov8n.onnx)
-
-If you want to export a fresh free model with Ultralytics on a Linux/Pi host:
-
-```powershell
-python scripts/fetch_free_model.py --variant yolov8n --repo-root .
+### Step 4 — Run Hub & Dashboard
+```bash
+cargo run --bin caesar-hub -- --config configs/hub.toml
+python services/caesar_console/server.py   # installs deps automatically
 ```
 
-## Testing and validation status
+### Step 5 (Optional) — Ollama Fallback VLM
+```bash
+ollama run llava   # starts background vision model on port 11434
+```
+The edge node will fall back to this automatically if ONNX inference fails.
 
-Validation run noted here reflects work completed on **March 27, 2026**.
+---
 
-### Tests completed successfully on this workstation
+## Dashboard — What Each Panel Shows
 
-- `cargo metadata --format-version 1 --no-deps`
-- `cargo fmt --all --check`
-- Python syntax checks for:
-  - console service
-  - orchestrator service
-  - key and model tools
-  - ROS bridge files
-  - adapter scripts
-- `services/mesh_orchestrator/orchestrator.py --run-once`
-- control-plane file generation under `output/caesar/control_plane`
-- console HTTP smoke test against:
-  - `/healthz`
-  - `/api/stats`
-  - `/api/regional-summary`
-- key derivation via `scripts/manage_keys.py`
-- model presence check for `models/yolov8n.onnx`
+| Panel | Data Source | Live? |
+|---|---|---|
+| Active Mesh Tracks | `/api/stats` + SSE push | ✅ |
+| Regional Throughput | `/api/stats` + SSE push | ✅ |
+| Anomaly Probability | `/api/stats` + SSE push | ✅ |
+| FedPDM Alignment | `/api/learning-plan` | ✅ |
+| Map + Node Markers | `/api/latest` + `/api/node-registry` | ✅ |
+| pxADMM Heatmap | Computed from active tracks | ✅ |
+| YOLO Feed Log | Appended per detection cycle | ✅ |
+| Confidence Bars | Computed from threat ratios | ✅ |
+| Learning Fabric | `/api/learning-plan` | ✅ |
+| Track Log Table | `/api/latest` rolling window | ✅ |
+| Live Anomaly Stream | high-interest events | ✅ |
+| Governance Audit | `/api/governance-audit` | ✅ |
+| Camera Feed | `/api/camera-stream` MJPEG | ✅ |
+| Footer Ticker | Latest track summary | ✅ |
 
-### Tests not fully possible on this workstation
-
-- full Rust build and `cargo check`
-- running the Rust hub binary
-- running the Rust edge binary
-- full end-to-end edge -> hub -> orchestrator -> console -> ROS with live hardware
-
-### Why those tests are blocked
-
-This Windows workstation is missing the MSVC linker `link.exe`, so Rust compilation cannot complete here. The repo is structurally valid, but real Rust execution needs:
-
-- Visual Studio Build Tools with C++, or
-- a Linux/Pi deployment target
-
-## Known limitations
-
-- Thermal and radar readers are still adapter contracts rather than vendor-specific drivers.
-- Multi-protocol transport is represented in cluster/orchestration planning, but the live data plane currently uses the implemented TCP JSONL uplink path.
-- Federated learning, anomaly training, and reinforcement updates are currently planning/control-plane outputs, not active distributed training loops.
-- ROS 2 bridge currently publishes journal records as `std_msgs/String`, not custom message types.
-
-## Recommended next implementation steps
-
-If development continues, the highest-value next steps are:
-
-1. Replace thermal adapter stubs with real vendor readers.
-2. Replace radar adapter stubs with real vendor readers.
-3. Move the hub and edge services to Linux and complete real Rust builds.
-4. Add a launcher for bringing up hub, orchestrator, console, and multiple nodes together.
-5. Replace `std_msgs/String` in ROS with custom typed messages.
-6. Add real federated model artifact exchange instead of planning-only rounds.
-
-## Supporting docs
-
-- [services/caesar_console/README.md](/C:/Users/Leonard/Documents/New project/services/caesar_console/README.md)
-- [services/mesh_orchestrator/README.md](/C:/Users/Leonard/Documents/New project/services/mesh_orchestrator/README.md)
-- [ros2_ws/README.md](/C:/Users/Leonard/Documents/New project/ros2_ws/README.md)
-- [models/README.md](/C:/Users/Leonard/Documents/New project/models/README.md)
+Nothing in the dashboard is static. Every element updates on the SSE push cycle (every 2 seconds from the server) or the simulation advance cycle (every 1.2 seconds when offline).

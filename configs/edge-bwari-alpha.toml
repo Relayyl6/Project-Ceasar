@@ -11,8 +11,7 @@ latitude = 9.2797
 longitude = 7.3781
 
 [uplink]
-mode = "tcp_jsonl"
-tcp_addr = "127.0.0.1:7878"
+mode = "gossipsub"
 
 [optical]
 enabled = true
@@ -39,4 +38,4 @@ point_count = 48
 frame_interval_ms = 325
 
 [inference]
-mode = "heuristic"
+mode = "ort_native"

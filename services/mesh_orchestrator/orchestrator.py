@@ -144,12 +144,13 @@ def build_orchestration_plan(cluster: dict, latest: dict, alerts: list[dict]) ->
                     "secondary_protocol": "zenoh",
                 }
             )
-        if node["role"] == "relay":
+        if node["role"] == "relay" or node["role"] == "drone":
             relay_actions.append(
                 {
                     "node_id": node["node_id"],
                     "assignment": "mesh-heal",
                     "target_zone": highest_pressure_zone(latest_records),
+                    "ast_directive": "Adaptive Selective Tilling (AST) - Execute Grid Survey for 3D Terrain & NDVI mapping",
                 }
             )
 
@@ -163,6 +164,11 @@ def build_orchestration_plan(cluster: dict, latest: dict, alerts: list[dict]) ->
         },
         "routing_actions": routing_actions,
         "relay_actions": relay_actions,
+        "multi_domain_orchestration": {
+            "framework": "MARL (Multi-Agent Reinforcement Learning)",
+            "integrated_assets": ["BAHA (Air)", "BARKAN (Land)", "SANCAR (Sea)", "Archer (VTOL)", "Duma (UGV)"],
+            "decentralized_fallback": True,
+        }
     }
 
 
@@ -193,8 +199,8 @@ def build_learning_plan(cluster: dict, latest: dict, alerts: list[dict]) -> dict
             semi_supervised_jobs.append(
                 {
                     "node_id": node["node_id"],
-                    "job_type": "anomaly_autoencoder_refresh",
-                    "target_model": "environmental-anomaly-detector",
+                    "job_type": "distributed_gaussian_process_refresh",
+                    "target_model": "pxADMM-environmental-anomaly-detector",
                     "window_size": max(50, len(tracks) * 5),
                     "trigger": "confidence-spread-shift",
                 }
@@ -203,10 +209,22 @@ def build_learning_plan(cluster: dict, latest: dict, alerts: list[dict]) -> dict
             reinforcement_jobs.append(
                 {
                     "node_id": node["node_id"],
-                    "job_type": "routing_policy_update",
-                    "target_policy": "mesh-traffic-coordinator",
+                    "job_type": "swarm_routing_policy_update",
+                    "target_policy": "aco_pso_traffic_coordinator",
+                    "resource_allocation_algorithm": "ABC", # Artificial Bee Colony for resource distribution
                     "reward_signal": "alert_delivery_latency_vs_bandwidth",
                     "trigger": "relay-load-change",
+                }
+            )
+            
+        if "compression" in node["learning_layers"] or True:
+            supervised_jobs.append(
+                {
+                    "node_id": node["node_id"],
+                    "job_type": "model_compression",
+                    "technique": "LAP-DTR", # Layer-Adaptive Partitioning with Dynamic Task Redistribution
+                    "knowledge_distillation": True,
+                    "trigger": "bandwidth-saturation-limit",
                 }
             )
 
@@ -223,13 +241,13 @@ def build_learning_plan(cluster: dict, latest: dict, alerts: list[dict]) -> dict
         "reinforcement_learning": reinforcement_jobs,
         "federated_round": {
             "round_id": int(time.time()),
-            "strategy": cluster["federated_strategy"],
+            "strategy": "FedPDM_Sinkhorn_Knopp",
             "participants": participants,
             "aggregation_target": "regional-hub",
             "global_models": [
-                "detector-head",
-                "environmental-anomaly-detector",
-                "mesh-traffic-coordinator",
+                "yolo-world-detector-head",
+                "pxADMM-environmental-anomaly-detector",
+                "aco_pso_traffic_coordinator",
             ],
         },
     }

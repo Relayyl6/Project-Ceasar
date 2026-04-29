@@ -11,3 +11,16 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 uriel-caesar-core = { path = "../uriel-caesar-core" }
+ort.workspace = true
+ndarray.workspace = true
+image = "0.25.10"
+reqwest = { version = "0.13.3", features = ["json"] }
+serialport = "4.9.0"
+nusb = "0.2.3"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+pcap = "2.1.1"
+soapysdr = "0.4.0"
+aya = "0.12.0"
+rppal = "0.17.1"
+cpal = "0.15.2"

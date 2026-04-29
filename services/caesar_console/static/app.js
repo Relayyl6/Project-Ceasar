@@ -1,827 +1,828 @@
-// ─── Constants ───────────────────────────────────────────────────────────────
+(function () {
+  "use strict";
 
-const MODALITY_ICONS = {
-  optical: "videocam",
-  thermal: "thermostat",
-  radar: "radar",
-  manual: "edit_note",
-};
-
-const ROLE_COLORS = {
-  fixed_tower: "#50e1f9",
-  relay: "#9df197",
-  regional_hub: "#ffd16c",
-};
-
-const THREAT_COLORS = {
-  "high-interest": "#ff716c",
-  monitor: "#ffd16c",
-  none: "#7d8694",
-};
-
-// ─── Connection State ─────────────────────────────────────────────────────────
-
-const connState = {
-  online: false,
-  consecutiveFailures: 0,
-  lastSuccessMs: null,
-  lastAttemptMs: null,
-  retryDelayMs: 2000,
-  maxRetryDelayMs: 30000,
-  endpointHealth: {},
-  refreshTimer: null,
-  refreshIntervalMs: 8000,
-  isRefreshing: false,
-};
-
-// ─── Utility ──────────────────────────────────────────────────────────────────
-
-function getBody(record) {
-  return record?.envelope?.body ?? {};
-}
-
-function getRecordTimeMs(record) {
-  return record?.received_at_ms ?? record?.timestamp_ms ?? getBody(record)?.timestamp_ms ?? 0;
-}
-
-function formatLabel(label) {
-  return String(label ?? "")
-    .replaceAll("_", " ")
-    .replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
-function formatPercent(value, digits = 1) {
-  return `${(Math.max(0, Number(value) || 0) * 100).toFixed(digits)}%`;
-}
-
-function formatNumber(value, digits = 2) {
-  return Number(value || 0).toFixed(digits);
-}
-
-function formatTime(ms) {
-  if (!ms) return "--";
-  return new Date(ms).toLocaleTimeString([], {
-    hour12: false,
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
-}
-
-function formatRelativeTime(ms) {
-  if (!ms) return "never";
-  const delta = Date.now() - ms;
-  if (delta < 5000) return "just now";
-  if (delta < 60000) return `${Math.round(delta / 1000)}s ago`;
-  if (delta < 3600000) return `${Math.round(delta / 60000)}m ago`;
-  return `${Math.round(delta / 3600000)}h ago`;
-}
-
-function minutesLabel(seconds) {
-  const minutes = Math.max(1, Math.round((seconds || 0) / 60));
-  return `${minutes}m`;
-}
-
-function clamp(value, min, max) {
-  return Math.min(max, Math.max(min, value));
-}
-
-function hashString(input) {
-  let hash = 0;
-  for (const char of String(input)) {
-    hash = (hash << 5) - hash + char.charCodeAt(0);
-    hash |= 0;
-  }
-  return Math.abs(hash);
-}
-
-function hexToRgba(hex, alpha) {
-  const normalized = hex.replace("#", "");
-  const bigint = parseInt(normalized, 16);
-  const r = (bigint >> 16) & 255;
-  const g = (bigint >> 8) & 255;
-  const b = bigint & 255;
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-}
-
-function shortenNodeLabel(nodeId) {
-  const parts = String(nodeId || "").split("-");
-  if (parts.length <= 2) return String(nodeId || "").toUpperCase();
-  return `${parts[0]}-${parts[parts.length - 1]}`.toUpperCase();
-}
-
-function badgeClassForThreat(threat) {
-  if (threat === "high-interest") return "data-pill data-pill-error";
-  if (threat === "monitor") return "data-pill data-pill-tertiary";
-  return "data-pill data-pill-primary";
-}
-
-function getActiveRecords(latest, cutoffMs) {
-  return Object.values(latest || {})
-    .filter((r) => getRecordTimeMs(r) >= cutoffMs && getBody(r).track_id)
-    .sort((a, b) => getRecordTimeMs(b) - getRecordTimeMs(a));
-}
-
-function computeThreatScore(body) {
-  const base = Number(body.confidence || 0);
-  if (body.threat_level === "high-interest") return clamp(base, 0, 0.999);
-  if (body.threat_level === "monitor") return clamp(base * 0.42, 0, 0.999);
-  return clamp(base * 0.18, 0, 0.999);
-}
-
-// ─── Fetch with per-endpoint health tracking ──────────────────────────────────
-
-async function loadJson(path, fallback = null) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 7000);
-  try {
-    const response = await fetch(path, { cache: "no-store", signal: controller.signal });
-    clearTimeout(timeout);
-    if (!response.ok) {
-      connState.endpointHealth[path] = response.status === 404 ? "missing" : "error";
-      console.warn(`[caesar] ${path} → HTTP ${response.status}`);
-      return fallback;
-    }
-    const data = await response.json();
-    connState.endpointHealth[path] = "ok";
-    return data;
-  } catch (err) {
-    clearTimeout(timeout);
-    connState.endpointHealth[path] = err.name === "AbortError" ? "timeout" : "error";
-    console.warn(`[caesar] ${path} → ${err.message}`);
-    return fallback;
-  }
-}
-
-// ─── Connection & Status UI ───────────────────────────────────────────────────
-
-function updateConnectionBadge() {
-  const dot = document.getElementById("connDot");
-  const label = document.getElementById("connLabel");
-  const spinner = document.getElementById("refreshingSpinner");
-  const retryBtn = document.getElementById("retryBtn");
-  const badge = document.getElementById("connBadge");
-
-  if (!dot) return;
-
-  if (connState.isRefreshing) {
-    spinner?.classList.remove("hidden");
-  } else {
-    spinner?.classList.add("hidden");
-  }
-
-  if (connState.online) {
-    dot.style.background = "#9df197";
-    dot.style.boxShadow = "0 0 8px #9df197";
-    label.textContent = connState.lastSuccessMs
-      ? `Live · synced ${formatRelativeTime(connState.lastSuccessMs)}`
-      : "Live";
-    if (badge) badge.style.borderColor = "rgba(157,241,151,0.25)";
-    retryBtn?.classList.add("hidden");
-  } else if (connState.consecutiveFailures > 0) {
-    dot.style.background = "#ff716c";
-    dot.style.boxShadow = "0 0 8px #ff716c";
-    label.textContent = connState.lastSuccessMs
-      ? `Offline · last sync ${formatRelativeTime(connState.lastSuccessMs)}`
-      : `Offline · ${connState.consecutiveFailures} failure${connState.consecutiveFailures !== 1 ? "s" : ""}`;
-    if (badge) badge.style.borderColor = "rgba(255,113,108,0.25)";
-    retryBtn?.classList.remove("hidden");
-  } else {
-    dot.style.background = "#ffd16c";
-    dot.style.boxShadow = "0 0 8px #ffd16c";
-    label.textContent = "Connecting…";
-    if (badge) badge.style.borderColor = "rgba(255,209,108,0.25)";
-    retryBtn?.classList.add("hidden");
-  }
-}
-
-function updateEndpointHealthPanel() {
-  const panel = document.getElementById("endpointHealthPanel");
-  if (!panel) return;
-  const entries = Object.entries(connState.endpointHealth);
-  if (!entries.length) {
-    panel.innerHTML = `<span class="text-[#7d8694] font-mono text-[0.6rem]">No requests yet</span>`;
+  if (!document.getElementById("map")) {
     return;
   }
-  panel.innerHTML = entries.map(([path, status]) => {
-    const short = path.replace(/^\/api\//, "").replace(/\?.*$/, "").replace(/^\//, "");
-    const color = status === "ok" ? "#9df197" : status === "missing" ? "#ffd16c" : "#ff716c";
-    const icon = status === "ok" ? "check_circle" : status === "missing" ? "help" : "error";
-    return `<div class="flex items-center gap-1.5 min-w-0">
-      <span class="material-symbols-outlined flex-shrink-0" style="font-size:0.75rem;color:${color};font-variation-settings:'FILL' 1">${icon}</span>
-      <span class="font-mono text-[0.6rem] uppercase truncate" style="color:${color}">${short}</span>
-    </div>`;
-  }).join("");
-}
 
-function renderDataStalenessWarning(stats) {
-  const el = document.getElementById("stalenessWarning");
-  if (!el) return;
-  if (stats && stats.stale) {
-    el.classList.remove("hidden");
-    const span = document.getElementById("stalenessText");
-    if (span) span.textContent = `⚠  Data pipeline stale — no detections inside the rolling ${minutesLabel(stats.activity_window_seconds)} window. Output files may be empty or not yet written by the edge pipeline.`;
-  } else {
-    el.classList.add("hidden");
-  }
-}
-
-function renderOfflineBanner(show) {
-  const el = document.getElementById("offlineBanner");
-  if (!el) return;
-  if (show) el.classList.remove("hidden");
-  else el.classList.add("hidden");
-}
-
-// ─── Mission logic ────────────────────────────────────────────────────────────
-
-function determineMissionMode(stats, regionalSummary) {
-  if ((stats.active_high_interest_count || 0) > 0 || regionalSummary.dominant_threat_level === "high-interest") {
-    return "tactical";
-  }
-  const siteText = JSON.stringify(regionalSummary.site_activity || {}).toLowerCase();
-  if (siteText.includes("farm") || siteText.includes("field") || siteText.includes("irrigation")) {
-    return "agriculture";
-  }
-  if ((stats.active_node_count || 0) > 0) return "surveillance";
-  return "infrastructure";
-}
-
-function setMissionMode(mode) {
-  const map = {
-    agriculture: "modeAgriculture",
-    infrastructure: "modeInfrastructure",
-    tactical: "modeTactical",
-    surveillance: "modeSurveillance",
+  const state = {
+    stats: null,
+    latest: {},
+    regionalSummary: {},
+    learningPlan: {},
+    nodeRegistry: { nodes: [] },
+    alerts: [],
+    governanceAudit: [],
+    online: false,
+    lastSyncMs: null,
   };
-  for (const id of Object.values(map)) {
-    document.getElementById(id)?.classList.remove("mission-link-active");
-  }
-  document.getElementById(map[mode] || map.tactical)?.classList.add("mission-link-active");
-}
 
-function buildMissionNarrative(stats, regionalSummary, learningPlan, nodeRegistry) {
-  const activeTracks = stats.latest_track_count || 0;
-  const activeNodes = stats.active_node_count || 0;
-  const registeredNodes = stats.registered_node_count || 0;
-  const highInterest = stats.active_high_interest_count || 0;
-  const supervisedJobs = (learningPlan.supervised_learning || []).length;
-  const rlJobs = (learningPlan.reinforcement_learning || []).length;
+  const MODALITY_ICONS = {
+    optical: "videocam",
+    thermal: "thermostat",
+    radar: "radar",
+    manual: "edit_note",
+    aggregation: "hub",
+  };
 
-  if (!activeTracks) {
-    return `The command layer is monitoring ${registeredNodes} registered nodes across ${
-      regionalSummary.region || "the region"
-    }. No active tracks are inside the rolling ${minutesLabel(
-      stats.activity_window_seconds
-    )} window, so the console is emphasizing registry posture, orchestration policy, and learning readiness instead of stale totals.`;
-  }
+  const THREAT_COLORS = {
+    "high-interest": "#ff3344",
+    monitor: "#ffaa00",
+    none: "#00d4ff",
+  };
 
-  return `The mesh is coordinating ${activeTracks} active tracks across ${activeNodes} live nodes in ${
-    regionalSummary.region || "the region"
-  }. ${highInterest} high-interest track${
-    highInterest === 1 ? "" : "s"
-  } currently shape routing priority, while ${supervisedJobs} supervised and ${rlJobs} reinforcement jobs keep the learning fabric aligned with mission demand.`;
-}
+  const ROLE_COLORS = {
+    fixed_tower: "#00d4ff",
+    relay: "#00ff88",
+    regional_hub: "#ffaa00",
+  };
 
-// ─── Renderers ────────────────────────────────────────────────────────────────
+  const FALLBACK_NODE_COORDS = {
+    "tower-bwari-alpha": [9.335, 7.282],
+    "tower-bwari-bravo": [9.248, 7.422],
+    "drone-relay-01": [9.302, 7.348],
+    "hub-bwari-01": [9.281, 7.382],
+    "tower-alpha": [9.335, 7.282],
+    "tower-bravo": [9.261, 7.412],
+    "tower-gamma": [9.198, 7.298],
+    "orch-beta": [9.281, 7.382],
+    "relay-01": [9.318, 7.338],
+    "relay-02": [9.241, 7.355],
+  };
 
-function updateHeader(stats, regionalSummary, nodeRegistry) {
-  const region = regionalSummary.region || "Bwari, FCT";
-  document.getElementById("regionLabel").textContent = String(region).toUpperCase();
-  document.getElementById("nodeHealthLabel").textContent = `Node Health: ${formatPercent(stats.node_health_ratio, 1)}`;
-  document.getElementById("windowLabel").textContent = `Rolling Window: ${minutesLabel(stats.activity_window_seconds)}`;
-  document.getElementById("clusterLabel").textContent = (nodeRegistry.cluster_id || "uriel orchestrator").toUpperCase();
-}
+  let map = null;
+  let linkLayer = null;
+  let markerLayer = null;
+  let trackLayer = null;
+  let pendingRender = false;
 
-function renderMetricCards(stats) {
-  document.getElementById("metricActiveTracks").textContent = stats.latest_track_count || 0;
-  document.getElementById("metricThroughput").innerHTML = `${formatNumber(stats.throughput_events_per_min, 1)} <span class="text-base font-normal">pkt/min</span>`;
-  document.getElementById("metricAnomaly").textContent = formatPercent(stats.anomaly_probability, 2);
-  document.getElementById("metricAlignment").textContent = formatNumber(stats.fed_alignment, 2);
-  document.getElementById("metricTrackSubtext").textContent = `Active tracks inside rolling ${minutesLabel(stats.activity_window_seconds)} window`;
-  document.getElementById("metricThroughputSubtext").textContent = `${stats.recent_journal_count || 0} semantic envelopes observed recently`;
-  document.getElementById("metricAnomalySubtext").textContent = `${stats.active_high_interest_count || 0} active high-interest tracks`;
-  document.getElementById("metricAlignmentSubtext").textContent = `${stats.federated_participant_count || 0}/${stats.registered_node_count || 0} registered nodes in round`;
-}
-
-function buildNodeSummaries(activeRecords, nodeRegistry) {
-  const registryMap = new Map((nodeRegistry.nodes || []).map((n) => [n.node_id, n]));
-  const groups = new Map();
-  for (const record of activeRecords) {
-    const body = getBody(record);
-    if (!groups.has(body.node_id)) groups.set(body.node_id, []);
-    groups.get(body.node_id).push(body);
+  function getBody(record) {
+    return record && record.envelope && record.envelope.body ? record.envelope.body : {};
   }
 
-  const summaries = [];
-  for (const [nodeId, tracks] of groups.entries()) {
-    const reg = registryMap.get(nodeId) || {};
-    const lats = tracks.map((t) => Number(t.geo_latitude)).filter(Number.isFinite);
-    const lons = tracks.map((t) => Number(t.geo_longitude)).filter(Number.isFinite);
-    summaries.push({
-      nodeId, role: reg.role || "fixed_tower", zone: reg.zone || tracks[0]?.site || "unknown",
-      protocols: reg.protocols || [], learningLayers: reg.learning_layers || [],
-      capabilities: reg.capabilities || [], tracks,
-      alertCount: tracks.filter((t) => t.threat_level === "high-interest").length,
-      latitude: lats.length ? lats.reduce((s, v) => s + v, 0) / lats.length : null,
-      longitude: lons.length ? lons.reduce((s, v) => s + v, 0) / lons.length : null,
-      active: true,
+  function getRecordTimeMs(record) {
+    return (
+      record?.received_at_ms ??
+      record?.timestamp_ms ??
+      getBody(record).timestamp_ms ??
+      0
+    );
+  }
+
+  function formatPercent(value, digits = 1) {
+    return `${(Math.max(0, Number(value) || 0) * 100).toFixed(digits)}%`;
+  }
+
+  function formatNumber(value, digits = 2) {
+    return Number(value || 0).toFixed(digits);
+  }
+
+  function formatTime(ms) {
+    if (!ms) return "--";
+    return new Date(ms).toLocaleTimeString([], {
+      hour12: false,
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
     });
   }
 
-  if (!summaries.length) {
-    return (nodeRegistry.nodes || []).map((node, i) => ({
-      nodeId: node.node_id, role: node.role, zone: node.zone,
-      protocols: node.protocols || [], learningLayers: node.learning_layers || [],
-      capabilities: node.capabilities || [], tracks: [], alertCount: 0,
-      latitude: null, longitude: null, active: false, fallbackIndex: i,
-    }));
+  function formatRelativeTime(ms) {
+    if (!ms) return "awaiting sync";
+    const delta = Math.max(0, Date.now() - ms);
+    if (delta < 5000) return "just now";
+    if (delta < 60000) return `${Math.round(delta / 1000)}s ago`;
+    if (delta < 3600000) return `${Math.round(delta / 60000)}m ago`;
+    return `${Math.round(delta / 3600000)}h ago`;
   }
 
-  for (const node of nodeRegistry.nodes || []) {
-    if (!groups.has(node.node_id)) {
-      summaries.push({
-        nodeId: node.node_id, role: node.role, zone: node.zone,
-        protocols: node.protocols || [], learningLayers: node.learning_layers || [],
-        capabilities: node.capabilities || [], tracks: [], alertCount: 0,
-        latitude: null, longitude: null, active: false,
+  function minutesLabel(seconds) {
+    return `${Math.max(1, Math.round((Number(seconds) || 0) / 60))}m`;
+  }
+
+  function formatLabel(value) {
+    return String(value || "none")
+      .replaceAll("_", " ")
+      .replace(/\b\w/g, (char) => char.toUpperCase());
+  }
+
+  function clamp(value, min, max) {
+    return Math.min(max, Math.max(min, value));
+  }
+
+  function hexToRgba(hex, alpha) {
+    const normalized = String(hex || "#00d4ff").replace("#", "");
+    const bigint = Number.parseInt(normalized, 16);
+    const red = (bigint >> 16) & 255;
+    const green = (bigint >> 8) & 255;
+    const blue = bigint & 255;
+    return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+  }
+
+  function hashString(input) {
+    let hash = 0;
+    for (const char of String(input || "")) {
+      hash = (hash << 5) - hash + char.charCodeAt(0);
+      hash |= 0;
+    }
+    return Math.abs(hash);
+  }
+
+  function getActiveRecords() {
+    const cutoff = Number(state.stats?.active_cutoff_ms || 0);
+    return Object.values(state.latest || {})
+      .filter((record) => getRecordTimeMs(record) >= cutoff && getBody(record).track_id)
+      .sort((a, b) => getRecordTimeMs(b) - getRecordTimeMs(a));
+  }
+
+  function computeThreatScore(body) {
+    const confidence = clamp(Number(body?.confidence || 0), 0, 0.999);
+    if (body?.threat_level === "high-interest") {
+      return confidence;
+    }
+    if (body?.threat_level === "monitor") {
+      return clamp(confidence * 0.42, 0, 0.999);
+    }
+    return clamp(confidence * 0.18, 0, 0.999);
+  }
+
+  function getFallbackCoord(nodeId, index) {
+    const direct = FALLBACK_NODE_COORDS[String(nodeId || "").toLowerCase()];
+    if (direct) {
+      return direct;
+    }
+    const seed = hashString(`${nodeId}-${index}`);
+    return [
+      9.2882 + ((seed % 100) - 50) * 0.0012,
+      7.3821 + ((Math.floor(seed / 10) % 100) - 50) * 0.0012,
+    ];
+  }
+
+  function buildNodeSummaries(activeRecords) {
+    const grouped = new Map();
+    const registryNodes = state.nodeRegistry?.nodes || [];
+    const registryMap = new Map(registryNodes.map((node) => [node.node_id, node]));
+
+    activeRecords.forEach((record) => {
+      const body = getBody(record);
+      if (!grouped.has(body.node_id)) {
+        grouped.set(body.node_id, []);
+      }
+      grouped.get(body.node_id).push(body);
+    });
+
+    const orderedIds = [
+      ...new Set([
+        ...grouped.keys(),
+        ...registryNodes.map((node) => node.node_id),
+      ]),
+    ];
+
+    return orderedIds.map((nodeId, index) => {
+      const registry = registryMap.get(nodeId) || {};
+      const tracks = grouped.get(nodeId) || [];
+      const latitudes = tracks
+        .map((track) => Number(track.geo_latitude))
+        .filter(Number.isFinite);
+      const longitudes = tracks
+        .map((track) => Number(track.geo_longitude))
+        .filter(Number.isFinite);
+      const fallback = getFallbackCoord(nodeId, index);
+
+      return {
+        nodeId,
+        role: registry.role || "fixed_tower",
+        zone: registry.zone || tracks[0]?.site || "bwari",
+        learningLayers: registry.learning_layers || [],
+        capabilities: registry.capabilities || [],
+        active: tracks.length > 0,
+        alertCount: tracks.filter((track) => track.threat_level === "high-interest").length,
+        latitude: latitudes.length
+          ? latitudes.reduce((sum, value) => sum + value, 0) / latitudes.length
+          : fallback[0],
+        longitude: longitudes.length
+          ? longitudes.reduce((sum, value) => sum + value, 0) / longitudes.length
+          : fallback[1],
+      };
+    });
+  }
+
+  function ensureMap() {
+    if (map || !window.L) {
+      return;
+    }
+
+    map = window.L.map("map", {
+      zoomControl: false,
+      attributionControl: false,
+    }).setView([9.2882, 7.3821], 11);
+
+    window.L.tileLayer(
+      "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
+      { maxZoom: 19 }
+    ).addTo(map);
+
+    window.L.control.zoom({ position: "bottomright" }).addTo(map);
+    linkLayer = window.L.layerGroup().addTo(map);
+    markerLayer = window.L.layerGroup().addTo(map);
+    trackLayer = window.L.layerGroup().addTo(map);
+
+    setTimeout(() => map.invalidateSize(), 0);
+  }
+
+  function setText(id, value) {
+    const element = document.getElementById(id);
+    if (element) {
+      element.textContent = value;
+    }
+  }
+
+  function renderConnection() {
+    const dot = document.getElementById("connDot");
+    const label = document.getElementById("connLabel");
+    if (!dot || !label) {
+      return;
+    }
+
+    if (state.online) {
+      dot.style.background = "#00ff88";
+      dot.style.boxShadow = "0 0 8px #00ff88";
+      label.textContent = `LIVE · SYNCED ${formatRelativeTime(state.lastSyncMs).toUpperCase()}`;
+      return;
+    }
+
+    dot.style.background = "#ff3344";
+    dot.style.boxShadow = "0 0 8px #ff3344";
+    label.textContent = state.lastSyncMs
+      ? `SIM FALLBACK · LAST LIVE ${formatRelativeTime(state.lastSyncMs).toUpperCase()}`
+      : "SIM FALLBACK · WAITING FOR HUB";
+  }
+
+  function renderHeader() {
+    setText(
+      "navRegion",
+      String(state.regionalSummary?.region || "Bwari, FCT").toUpperCase()
+    );
+    setText("hdrNodeHealth", formatPercent(state.stats?.node_health_ratio, 1));
+  }
+
+  function renderMetrics(activeRecords) {
+    setText("mActiveTracks", String(state.stats?.latest_track_count || activeRecords.length || 0));
+
+    const throughput = document.getElementById("mThroughput");
+    if (throughput) {
+      throughput.innerHTML = `${formatNumber(
+        state.stats?.throughput_events_per_min,
+        1
+      )} <span class="metric-unit">pkt/min</span>`;
+    }
+
+    setText(
+      "mThroughputSub",
+      `${state.stats?.recent_journal_count || 0} signed envelopes in rolling window`
+    );
+    setText("mAnomaly", formatPercent(state.stats?.anomaly_probability, 2));
+    setText(
+      "mAnomalySub",
+      `${state.stats?.active_high_interest_count || 0} active high-interest tracks`
+    );
+    setText("mAlignment", formatNumber(state.stats?.fed_alignment, 2));
+    setText(
+      "mAlignmentSub",
+      `${state.stats?.federated_participant_count || 0}/${state.stats?.registered_node_count || 0} federated participants`
+    );
+  }
+
+  function renderMap(activeRecords) {
+    ensureMap();
+    if (!map || !linkLayer || !markerLayer || !trackLayer) {
+      return;
+    }
+
+    linkLayer.clearLayers();
+    markerLayer.clearLayers();
+    trackLayer.clearLayers();
+
+    const nodeSummaries = buildNodeSummaries(activeRecords);
+    const hub = nodeSummaries.find((node) => node.role === "regional_hub") || nodeSummaries[0];
+
+    nodeSummaries.forEach((node) => {
+      const color = node.alertCount > 0 ? "#ff3344" : ROLE_COLORS[node.role] || "#00d4ff";
+      const marker = window.L.marker([node.latitude, node.longitude], {
+        icon: window.L.divIcon({
+          className: "",
+          iconSize: [96, 36],
+          iconAnchor: [18, 18],
+          html: `<div style="display:flex;flex-direction:column;align-items:flex-start;gap:4px">
+            <div style="width:14px;height:14px;border-radius:50%;background:${color};box-shadow:0 0 12px ${color};border:2px solid ${color}88"></div>
+            <div class="node-marker-label" style="border-color:${color}88;color:${color}">
+              ${String(node.nodeId || "").toUpperCase()}
+            </div>
+          </div>`,
+        }),
+      });
+
+      marker.bindPopup(
+        `<strong>${node.nodeId}</strong><br>Role: ${formatLabel(node.role)}<br>Zone: ${formatLabel(
+          node.zone
+        )}<br>Status: ${node.active ? "Active" : "Standby"}<br><button onclick="window.openCamera('${node.nodeId}')" style="margin-top:8px; width:100%; padding:6px; background:var(--cyan); color:#000; border:none; font-family:'Share Tech Mono',monospace; cursor:pointer; font-weight:bold;">[ OPEN CAMERA FEED ]</button>`
+      );
+      markerLayer.addLayer(marker);
+    });
+
+    if (hub) {
+      nodeSummaries
+        .filter((node) => node.nodeId !== hub.nodeId)
+        .forEach((node) => {
+          linkLayer.addLayer(
+            window.L.polyline(
+              [
+                [hub.latitude, hub.longitude],
+                [node.latitude, node.longitude],
+              ],
+              {
+                color: "#00d4ff",
+                weight: 1.5,
+                opacity: node.active ? 0.8 : 0.35,
+                dashArray: "8 6",
+              }
+            )
+          );
+        });
+    }
+
+    activeRecords.slice(0, 18).forEach((record, index) => {
+      const body = getBody(record);
+      const fallbackNode = nodeSummaries.find((node) => node.nodeId === body.node_id);
+      const baseLat = Number(body.geo_latitude);
+      const baseLon = Number(body.geo_longitude);
+      const seed = hashString(`${body.track_id}-${index}`);
+      const latitude = Number.isFinite(baseLat)
+        ? baseLat
+        : (fallbackNode?.latitude || 9.2882) + ((seed % 7) - 3) * 0.0015;
+      const longitude = Number.isFinite(baseLon)
+        ? baseLon
+        : (fallbackNode?.longitude || 7.3821) + ((Math.floor(seed / 7) % 7) - 3) * 0.0015;
+
+      trackLayer.addLayer(
+        window.L.circleMarker([latitude, longitude], {
+          radius: body.threat_level === "high-interest" ? 5 : 4,
+          color: THREAT_COLORS[body.threat_level] || "#00d4ff",
+          fillColor: THREAT_COLORS[body.threat_level] || "#00d4ff",
+          fillOpacity: 0.95,
+          weight: 0,
+        })
+      );
+    });
+
+    if (nodeSummaries.length) {
+      const bounds = window.L.latLngBounds(
+        nodeSummaries.map((node) => [node.latitude, node.longitude])
+      );
+      if (bounds.isValid()) {
+        map.fitBounds(bounds.pad(0.28), { animate: false });
+      }
+    }
+
+    setText(
+      "mapDesc",
+      activeRecords.length
+        ? `${activeRecords.length} live tracks across ${
+            state.stats?.active_node_count || nodeSummaries.filter((node) => node.active).length
+          } active nodes. Tracking anomalies in Agricultural (AST) & Tactical domains. Dominant posture: ${formatLabel(
+            state.regionalSummary?.dominant_threat_level || "monitor"
+          )}.`
+        : `No live tracks in the rolling ${minutesLabel(
+            state.stats?.activity_window_seconds || 900
+          )} window. Swarm routing is idling via ACO/PSO policies while awaiting Edge detection.`
+    );
+  }
+
+  function renderHeatmap(activeRecords) {
+    const grid = document.getElementById("heatGrid");
+    if (!grid) {
+      return;
+    }
+
+    const cells = Array.from({ length: 64 }, () => ({
+      intensity: 0,
+      color: "#1a2535",
+    }));
+
+    const records = activeRecords.length ? activeRecords : Object.values(state.latest || {}).slice(0, 6);
+    records.forEach((record, index) => {
+      const body = getBody(record);
+      const cellIndex = hashString(`${body.track_id}-${body.node_id}-${index}`) % 64;
+      const color = THREAT_COLORS[body.threat_level] || "#00d4ff";
+      cells[cellIndex].intensity += 1;
+      cells[cellIndex].color = color;
+      if (cellIndex + 1 < cells.length) {
+        cells[cellIndex + 1].intensity += 0.3;
+        cells[cellIndex + 1].color = color;
+      }
+    });
+
+    grid.innerHTML = "";
+    cells.forEach((cell) => {
+      const el = document.createElement("div");
+      el.className = "heat-cell";
+      el.style.background = cell.intensity
+        ? hexToRgba(cell.color, clamp(cell.intensity * 0.18, 0.18, 0.9))
+        : "#1a2535";
+      grid.appendChild(el);
+    });
+
+    const sigma =
+      0.08 +
+      Number(state.stats?.anomaly_probability || 0) * 0.8 +
+      Math.min(activeRecords.length, 18) * 0.01;
+    setText("sigmaVal", `SIGMA: ${sigma.toFixed(3)}`);
+    setText(
+      "kernelVal",
+      `KERNEL: ${activeRecords.length ? "FEDPDM / LIVE" : "PRIOR / STANDBY"}`
+    );
+  }
+
+  function renderConfidence(activeRecords) {
+    const benignRatio = activeRecords.length
+      ? activeRecords.filter((record) => getBody(record).threat_level !== "high-interest").length /
+        activeRecords.length
+      : 1;
+    const threatRatio = clamp(Number(state.stats?.anomaly_probability || 0), 0, 1);
+    const infraLoad = clamp(Number(state.stats?.node_health_ratio || 0), 0, 1);
+
+    [
+      ["confTT", "confTTBar", threatRatio],
+      ["confCF", "confCFBar", benignRatio],
+      ["confIF", "confIFBar", infraLoad],
+    ].forEach(([labelId, barId, value]) => {
+      setText(labelId, formatPercent(value, 1));
+      const bar = document.getElementById(barId);
+      if (bar) {
+        bar.style.width = `${Math.round(value * 100)}%`;
+      }
+    });
+  }
+
+  function renderLearning(activeRecords) {
+    const segments = document.getElementById("fedSegs");
+    if (segments) {
+      segments.innerHTML = "";
+      const filled = Math.round(clamp(Number(state.stats?.fed_alignment || 0), 0, 1) * 10);
+      for (let index = 0; index < 10; index += 1) {
+        const segment = document.createElement("div");
+        segment.className = "fed-seg";
+        segment.style.background = index < filled ? "var(--cyan)" : "var(--surface2)";
+        segments.appendChild(segment);
+      }
+    }
+
+    const roundId = state.learningPlan?.federated_round?.round_id;
+    const roundLabel = roundId ? String(roundId).slice(-4) : "--";
+    setText(
+      "fedRound",
+      `Round ${roundLabel} / ${state.stats?.registered_node_count || "--"} nodes`
+    );
+    setText("fedLoss", `Alignment: ${formatNumber(state.stats?.fed_alignment, 2)}`);
+
+    const rlGrid = document.getElementById("rlGrid");
+    if (rlGrid) {
+      rlGrid.innerHTML = "";
+      const activeNodeIds = new Set(activeRecords.map((record) => getBody(record).node_id));
+      (state.nodeRegistry?.nodes || []).slice(0, 6).forEach((node) => {
+        const cell = document.createElement("div");
+        const hasRl = (node.learning_layers || []).includes("rl");
+        const isActive = activeNodeIds.has(node.node_id);
+        cell.className = "rl-node";
+        cell.style.background = hasRl
+          ? "var(--red)"
+          : isActive
+          ? "var(--cyan)"
+          : "var(--surface2)";
+        cell.style.color = hasRl ? "#ffffff" : isActive ? "var(--bg)" : "var(--text-dim)";
+        cell.textContent = String(node.node_id || "").slice(0, 2).toUpperCase();
+        rlGrid.appendChild(cell);
       });
     }
+
+    const rlJobs = (state.learningPlan?.reinforcement_learning || []).length;
+    setText(
+      "criticStatus",
+      rlJobs ? (activeRecords.length ? "ACTIVE" : "READY") : "IDLE"
+    );
   }
-  return summaries;
-}
 
-function fallbackNodePosition(summary, index, total) {
-  const hash = hashString(summary.nodeId);
-  if (summary.role === "regional_hub") return { x: 74, y: 68 };
-  if (summary.role === "relay") return { x: 52 + (hash % 16), y: 26 + (hash % 10) };
-  const cols = Math.max(2, Math.ceil(Math.sqrt(total || 1)));
-  return {
-    x: 20 + (index % cols) * (52 / Math.max(cols - 1, 1)) + (hash % 7),
-    y: 28 + Math.floor(index / cols) * 18 + (hash % 6),
-  };
-}
+  function renderTrackLog(activeRecords) {
+    setText(
+      "trackMeta",
+      `Rolling ${minutesLabel(state.stats?.activity_window_seconds || 900)} window`
+    );
 
-function buildPositionResolver(nodeSummaries) {
-  const geoNodes = nodeSummaries.filter((s) => Number.isFinite(s.latitude) && Number.isFinite(s.longitude));
-  if (geoNodes.length >= 2) {
-    const lats = geoNodes.map((n) => n.latitude);
-    const lons = geoNodes.map((n) => n.longitude);
-    const [minLat, maxLat, minLon, maxLon] = [Math.min(...lats), Math.max(...lats), Math.min(...lons), Math.max(...lons)];
-    const [latSpan, lonSpan] = [maxLat - minLat, maxLon - minLon];
-    if (latSpan > 0.00001 || lonSpan > 0.00001) {
-      return (summary, index) => {
-        if (!Number.isFinite(summary.latitude) || !Number.isFinite(summary.longitude)) {
-          return fallbackNodePosition(summary, index, nodeSummaries.length);
-        }
-        return {
-          x: 12 + ((summary.longitude - minLon) / Math.max(lonSpan, 0.00001)) * 76,
-          y: 14 + (1 - (summary.latitude - minLat) / Math.max(latSpan, 0.00001)) * 70,
-        };
-      };
+    const body = document.getElementById("trackBody");
+    if (!body) {
+      return;
+    }
+
+    if (!activeRecords.length) {
+      body.innerHTML =
+        "<tr><td colspan='6' style='padding:16px 8px;color:var(--text-dim)'>No active tracks in the rolling window.</td></tr>";
+      return;
+    }
+
+    body.innerHTML = "";
+    activeRecords.slice(0, 8).forEach((record) => {
+      const payload = getBody(record);
+      const row = document.createElement("tr");
+      const threatClass =
+        payload.threat_level === "high-interest"
+          ? "threat-hi"
+          : payload.threat_level === "monitor"
+          ? "threat-lo"
+          : "threat-none";
+      const modalities = (payload.contributing_modalities || []).map(
+        (modality) =>
+          `<span class="material-symbols-outlined mod-icon">${MODALITY_ICONS[modality] || "sensors"}</span>`
+      );
+
+      row.innerHTML = `
+        <td class="track-id">#${payload.track_id}</td>
+        <td>${payload.node_id}</td>
+        <td><div class="mod-icons">${modalities.join("") || "--"}</div></td>
+        <td class="${threatClass}">${computeThreatScore(payload).toFixed(2)}</td>
+        <td>${Number(payload.confidence || 0).toFixed(3)}</td>
+        <td style="color:var(--text-dim)">${formatTime(getRecordTimeMs(record))}</td>
+      `;
+      body.appendChild(row);
+    });
+  }
+
+  function renderTicker(activeRecords) {
+    if (!activeRecords.length) {
+      setText(
+        "tickerText",
+        state.online
+          ? `Rolling detection window ${minutesLabel(
+              state.stats?.activity_window_seconds || 900
+            )} active. Waiting for fresh semantic envelopes from the edge mesh.`
+          : "Console is rendering fallback telemetry while the hub reconnects."
+      );
+      setText("yoloStatus", "> Awaiting fresh EKF frames for YOLO inference...");
+      return;
+    }
+
+    const latestRecord = getBody(activeRecords[0]);
+    setText(
+      "tickerText",
+      `Node ${latestRecord.node_id} reported ${latestRecord.track_id} at confidence ${Number(
+        latestRecord.confidence || 0
+      ).toFixed(3)} · ${state.stats?.latest_track_count || activeRecords.length} live tracks · ${
+        state.stats?.throughput_events_per_min || 0
+      } pkt/min · last sync ${formatRelativeTime(state.lastSyncMs)}`
+    );
+    
+    setText(
+      "yoloStatus",
+      `> Tracking anomaly: "${latestRecord.threat_level || "unknown"}" [Conf: ${Number(latestRecord.confidence || 0).toFixed(3)}] at Pos [${Number(latestRecord.position_m?.[0]||0).toFixed(1)}, ${Number(latestRecord.position_m?.[1]||0).toFixed(1)}]`
+    );
+  }
+
+  function renderYoloFeed(activeRecords) {
+    const feed = document.getElementById("yoloFeed");
+    if (!feed) return;
+    // Append new detection lines for the latest two records
+    activeRecords.slice(0, 2).forEach((record) => {
+      const body = getBody(record);
+      if (!body.track_id) return;
+      const ts = new Date(getRecordTimeMs(record)).toLocaleTimeString([], {hour12:false, hour:"2-digit", minute:"2-digit", second:"2-digit"});
+      const color = body.threat_level === "high-interest" ? "var(--red)" : body.threat_level === "monitor" ? "var(--amber)" : "var(--green)";
+      const line = document.createElement("div");
+      line.style.color = color;
+      line.textContent = `> [${ts}] ${body.track_id} · ${body.threat_level} · conf:${Number(body.confidence||0).toFixed(3)} · ${(body.contributing_modalities||[]).join("+")||"optical"}`;
+      feed.appendChild(line);
+      // Keep max 30 lines
+      while (feed.children.length > 30) feed.removeChild(feed.firstChild);
+    });
+    feed.scrollTop = feed.scrollHeight;
+
+    // Update yoloStatus with the most recent detection
+    const yoloStatus = document.getElementById("yoloStatus");
+    if (yoloStatus && activeRecords.length) {
+      const latest = getBody(activeRecords[0]);
+      yoloStatus.textContent = `> Tracking: "${latest.class_label || latest.threat_level}" [Conf: ${Number(latest.confidence||0).toFixed(3)}] at [${Number(latest.position_m?.[0]||0).toFixed(1)}, ${Number(latest.position_m?.[1]||0).toFixed(1)}]`;
+    } else if (yoloStatus) {
+      yoloStatus.textContent = "> Awaiting fresh EKF frames for YOLO inference...";
     }
   }
-  return (summary, index) => fallbackNodePosition(summary, index, nodeSummaries.length);
-}
 
-function renderMap(stats, regionalSummary, activeRecords, nodeRegistry) {
-  const markerLayer = document.getElementById("mapMarkers");
-  const linkLayer = document.getElementById("mapLinks");
-  markerLayer.innerHTML = "";
-  linkLayer.innerHTML = "";
-
-  const nodeSummaries = buildNodeSummaries(activeRecords, nodeRegistry);
-  const resolvePosition = buildPositionResolver(nodeSummaries);
-  const positions = new Map();
-
-  document.getElementById("mapTitle").textContent = String(regionalSummary.region || "Regional Theater").toUpperCase();
-  document.getElementById("mapNarrative").textContent =
-    stats.latest_track_count > 0
-      ? `${stats.latest_track_count} live tracks across ${stats.active_node_count} active nodes. Dominant posture: ${formatLabel(
-          regionalSummary.dominant_threat_level || "none"
-        )}, rolling ${minutesLabel(stats.activity_window_seconds)} window.`
-      : `No active tracks inside the rolling ${minutesLabel(
-          stats.activity_window_seconds
-        )} window. Holding registry positions — waiting for fresh edge detections.`;
-
-  nodeSummaries.forEach((summary, index) => {
-    const pos = resolvePosition(summary, index);
-    positions.set(summary.nodeId, pos);
-    const color = summary.alertCount > 0 ? "#ff716c" : ROLE_COLORS[summary.role] || ROLE_COLORS.fixed_tower;
-    const marker = document.createElement("div");
-    marker.className = "map-node";
-    marker.style.left = `${pos.x}%`;
-    marker.style.top = `${pos.y}%`;
-    marker.innerHTML = `
-      <div class="map-node-ring" style="border:1px dashed ${hexToRgba(color, 0.55)}"></div>
-      <span class="material-symbols-outlined text-2xl" style="color:${color};font-variation-settings:'FILL' 1,'wght' 500,'GRAD' 0,'opsz' 24;">location_on</span>
-      <span class="map-node-badge" style="border-color:${hexToRgba(color, 0.4)}">${shortenNodeLabel(summary.nodeId)}</span>`;
-    markerLayer.appendChild(marker);
-  });
-
-  const pathNodes = nodeSummaries.filter((s) => s.active).length > 1
-    ? nodeSummaries.filter((s) => s.active)
-    : nodeSummaries.slice(0, 3);
-
-  for (let i = 0; i < pathNodes.length - 1; i++) {
-    const cur = positions.get(pathNodes[i].nodeId);
-    const nxt = positions.get(pathNodes[i + 1].nodeId);
-    if (!cur || !nxt) continue;
-    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-    line.setAttribute("x1", `${cur.x}%`); line.setAttribute("y1", `${cur.y}%`);
-    line.setAttribute("x2", `${nxt.x}%`); line.setAttribute("y2", `${nxt.y}%`);
-    line.setAttribute("stroke", "#50e1f9"); line.setAttribute("stroke-width", "2");
-    line.setAttribute("stroke-dasharray", "10 5"); line.setAttribute("opacity", "0.85");
-    linkLayer.appendChild(line);
+  function renderAnomalyLog(activeRecords) {
+    const log = document.getElementById("anomalyLog");
+    if (!log) return;
+    // Append high-interest detections as they arrive
+    const hiRecords = activeRecords.filter(r => getBody(r).threat_level === "high-interest");
+    hiRecords.forEach((record) => {
+      const body = getBody(record);
+      if (!body.track_id) return;
+      const ts = new Date(getRecordTimeMs(record)).toLocaleTimeString([], {hour12:false, hour:"2-digit", minute:"2-digit", second:"2-digit"});
+      // Avoid exact duplicate lines
+      const lineText = `[${ts}] ⚠ ${body.track_id} · ${body.node_id} · conf:${Number(body.confidence||0).toFixed(3)}`;
+      const existing = Array.from(log.children).map(el => el.textContent);
+      if (!existing.includes(lineText)) {
+        const el = document.createElement("div");
+        el.style.cssText = "color:var(--red);border-bottom:1px solid rgba(255,51,68,0.1);padding:2px 0;";
+        el.textContent = lineText;
+        log.prepend(el);
+        while (log.children.length > 25) log.removeChild(log.lastChild);
+      }
+    });
+    // If no real data yet, show waiting state (but not static placeholder text)
+    if (log.children.length === 0) {
+      const el = document.createElement("div");
+      el.style.color = "var(--text-dim)";
+      el.textContent = `> Monitoring zone... ${state.online ? "LIVE" : "SIM"} · ${new Date().toLocaleTimeString()}`;
+      log.appendChild(el);
+      setTimeout(() => { if (el.parentNode) el.parentNode.removeChild(el); }, 3000);
+    }
   }
 
-  activeRecords.slice(0, 18).forEach((record, index) => {
-    const body = getBody(record);
-    const nodePos = positions.get(body.node_id) || fallbackNodePosition({ nodeId: body.node_id }, index, activeRecords.length);
-    const spread = 2 + (hashString(body.track_id) % 7);
-    const dot = document.createElement("div");
-    dot.className = "map-track-dot";
-    dot.style.left = `${clamp(nodePos.x + (index % 3) * spread - spread, 6, 94)}%`;
-    dot.style.top = `${clamp(nodePos.y + (index % 4) * spread - spread, 8, 92)}%`;
-    dot.style.color = THREAT_COLORS[body.threat_level] || "#50e1f9";
-    dot.style.background = THREAT_COLORS[body.threat_level] || "#50e1f9";
-    markerLayer.appendChild(dot);
-  });
-}
-
-function renderHeatmap(stats, activeRecords, nodeRegistry) {
-  const grid = document.getElementById("heatmapGrid");
-  grid.innerHTML = "";
-  const cells = Array.from({ length: 64 }, () => ({ intensity: 0, color: "#20262f" }));
-  const recordsToUse = activeRecords.length
-    ? activeRecords
-    : (nodeRegistry.nodes || []).map((n) => ({
-        envelope: { body: { track_id: n.node_id, node_id: n.node_id, threat_level: "monitor" } },
-      }));
-
-  recordsToUse.forEach((record, i) => {
-    const body = getBody(record);
-    const ci = hashString(`${body.track_id}-${body.node_id}-${i}`) % 64;
-    const col = body.threat_level === "high-interest" ? "#ffd16c" : body.node_id?.includes("relay") ? "#9df197" : "#50e1f9";
-    cells[ci].intensity += 1; cells[ci].color = col;
-    if (ci + 1 < 64) { cells[ci + 1].intensity += 0.35; cells[ci + 1].color = col; }
-  });
-
-  for (const cell of cells) {
-    const el = document.createElement("div");
-    el.className = "heat-cell";
-    el.style.background = cell.intensity ? hexToRgba(cell.color, clamp(cell.intensity * 0.22, 0.08, 0.88)) : "#1b2028";
-    grid.appendChild(el);
+  function renderGovernanceLog() {
+    const log = document.getElementById("governanceLog");
+    if (!log) return;
+    const audits = state.governanceAudit || [];
+    if (!audits.length) {
+      log.textContent = "> Governance audit stream: awaiting records...";
+      return;
+    }
+    log.innerHTML = "";
+    audits.slice(0, 8).forEach((entry) => {
+      const ts = entry.timestamp_ms ? new Date(entry.timestamp_ms).toLocaleTimeString([], {hour12:false, hour:"2-digit", minute:"2-digit", second:"2-digit"}) : "--:--:--";
+      const nodes = entry.regional_summary?.active_nodes ?? "?";
+      const tracks = entry.regional_summary?.active_tracks ?? "?";
+      const threat = entry.regional_summary?.dominant_threat_level ?? "none";
+      const color = threat === "high-interest" ? "var(--red)" : threat === "monitor" ? "var(--amber)" : "var(--text-dim)";
+      const el = document.createElement("div");
+      el.style.cssText = `color:${color};border-bottom:1px solid rgba(255,255,255,0.04);padding:1px 0;`;
+      el.textContent = `[${ts}] nodes:${nodes} tracks:${tracks} threat:${threat}`;
+      log.appendChild(el);
+    });
   }
 
-  const sigma = 0.08 + stats.anomaly_probability * 0.8 + Math.min(stats.latest_track_count || 0, 20) * 0.003;
-  document.getElementById("sigmaValue").textContent = `Sigma: ${sigma.toFixed(3)}`;
-  document.getElementById("kernelValue").textContent = `Kernel: ${activeRecords.length ? "RBF-ST" : "PRIOR-ONLY"}`;
-}
-
-function renderConfidenceBars(stats, activeRecords) {
-  const target = document.getElementById("confidenceBars");
-  target.innerHTML = "";
-  const activeCount = Math.max(activeRecords.length, 1);
-  const benignCount = activeRecords.filter((r) => getBody(r).threat_level !== "high-interest").length;
-  [
-    { label: "Tactical Threat", value: stats.anomaly_probability, color: "#ff716c" },
-    { label: "Civ/Friendly", value: benignCount / activeCount, color: "#9df197" },
-    { label: "Infrastructure Load", value: stats.node_health_ratio, color: "#50e1f9" },
-  ].forEach((row) => {
-    const w = document.createElement("div");
-    w.innerHTML = `
-      <div class="confidence-row-label"><span>${row.label}</span><span>${formatPercent(row.value, 1)}</span></div>
-      <div class="confidence-bar"><div class="confidence-fill" style="width:${clamp(row.value, 0, 1) * 100}%;background:${row.color};"></div></div>`;
-    target.appendChild(w);
-  });
-}
-
-function renderLearningFabric(stats, learningPlan, nodeRegistry, activeRecords) {
-  const segments = document.getElementById("federatedSegments");
-  segments.innerHTML = "";
-  const filled = Math.round(clamp(stats.fed_alignment, 0, 1) * 10);
-  for (let i = 0; i < 10; i++) {
-    const seg = document.createElement("div");
-    seg.className = "flex-1 h-full";
-    seg.style.background = i < filled ? "#50e1f9" : "#20262f";
-    segments.appendChild(seg);
+  function renderAll() {
+    pendingRender = false;
+    const activeRecords = getActiveRecords();
+    renderConnection();
+    renderHeader();
+    renderMetrics(activeRecords);
+    renderMap(activeRecords);
+    renderHeatmap(activeRecords);
+    renderConfidence(activeRecords);
+    renderLearning(activeRecords);
+    renderTrackLog(activeRecords);
+    renderTicker(activeRecords);
+    renderYoloFeed(activeRecords);
+    renderAnomalyLog(activeRecords);
+    renderGovernanceLog();
   }
 
-  const roundId = learningPlan.federated_round?.round_id;
-  document.getElementById("federatedRoundLabel").textContent = `Round ${roundId ? String(roundId).slice(-4) : "--"} / ${stats.registered_node_count || "--"} nodes`;
-  document.getElementById("federatedLossLabel").textContent = `Alignment: ${formatNumber(stats.fed_alignment, 2)}`;
-
-  const activeNodeIds = new Set(activeRecords.map((r) => getBody(r).node_id));
-  const rlGrid = document.getElementById("rlAgentGrid");
-  rlGrid.innerHTML = "";
-  (nodeRegistry.nodes || []).slice(0, 6).forEach((node) => {
-    const active = activeNodeIds.has(node.node_id);
-    const hasRl = (node.learning_layers || []).includes("rl");
-    const cell = document.createElement("div");
-    cell.className = "aspect-square flex items-center justify-center font-bold text-[0.65rem]";
-    cell.style.background = hasRl ? "#d7383b" : active ? "#50e1f9" : "#5a606b";
-    cell.style.color = hasRl ? "#190104" : active ? "#003239" : "#f1f3fc";
-    cell.textContent = shortenNodeLabel(node.node_id).slice(0, 2);
-    rlGrid.appendChild(cell);
-  });
-
-  const rlJobs = (learningPlan.reinforcement_learning || []).length;
-  document.getElementById("criticStatus").textContent = rlJobs ? (activeNodeIds.size ? "ACTIVE" : "READY") : "IDLE";
-
-  const supervised = (learningPlan.supervised_learning || []).length;
-  const semiSupervised = (learningPlan.semi_supervised_learning || []).length;
-  document.getElementById("learningNarrative").textContent = `The learning fabric is scheduling ${supervised} supervised jobs, ${semiSupervised} semi-supervised refreshes, and ${rlJobs} routing-policy updates. The dashboard treats these as readiness signals, not cumulative counters, so the panel stays meaningful even when the underlying journal keeps growing.`;
-}
-
-function modalityIcons(modalities) {
-  const values = (modalities || []).map((m) => String(m).toLowerCase());
-  if (!values.length) return "<span class='text-on-surface-variant'>--</span>";
-  return values.map((m) => `<span class="material-symbols-outlined text-xs">${MODALITY_ICONS[m] || "sensors"}</span>`).join("");
-}
-
-function renderTrackLog(activeRecords, stats) {
-  const target = document.getElementById("trackLogBody");
-  target.innerHTML = "";
-  document.getElementById("trackLogMeta").textContent = `Active detections, rolling ${minutesLabel(stats.activity_window_seconds)} window`;
-
-  if (!activeRecords.length) {
-    target.innerHTML = `<tr><td colspan="6" class="px-2 py-6 text-center"><div class="empty-state">No active tracks in rolling window</div></td></tr>`;
-    return;
+  function scheduleRender() {
+    if (pendingRender) {
+      return;
+    }
+    pendingRender = true;
+    window.requestAnimationFrame(renderAll);
   }
 
-  activeRecords.slice(0, 12).forEach((record, i) => {
-    const body = getBody(record);
-    const score = computeThreatScore(body);
-    const row = document.createElement("tr");
-    row.className = `border-b border-outline-variant/10 transition-colors hover:bg-surface-container-high ${i % 2 ? "bg-surface-container-low/20" : ""}`;
-    row.innerHTML = `
-      <td class="px-2 py-3 text-primary font-bold">#${body.track_id}</td>
-      <td class="px-2 py-3">${body.node_id}</td>
-      <td class="px-2 py-3"><span class="flex gap-1">${modalityIcons(body.contributing_modalities)}</span></td>
-      <td class="px-2 py-3 ${body.threat_level === "high-interest" ? "text-error" : "text-tertiary"}">${score.toFixed(2)}</td>
-      <td class="px-2 py-3 ${body.threat_level === "high-interest" ? "font-bold" : ""}">${Number(body.confidence || 0).toFixed(3)}</td>
-      <td class="px-2 py-3 text-on-surface-variant">${formatTime(getRecordTimeMs(record))}</td>`;
-    target.appendChild(row);
-  });
-}
-
-function renderAlertsFeed(alerts, stats) {
-  const target = document.getElementById("alertsFeed");
-  target.innerHTML = "";
-  document.getElementById("alertMeta").textContent = `Unique tracks in rolling ${minutesLabel(stats.activity_window_seconds)} window`;
-
-  const cutoff = stats.active_cutoff_ms || 0;
-  const recent = alerts.filter((r) => getRecordTimeMs(r) >= cutoff);
-  if (!recent.length) {
-    target.innerHTML = `<div class="empty-state">No high-interest alerts inside rolling window</div>`;
-    return;
-  }
-  recent.slice(0, 8).forEach((record) => {
-    const body = getBody(record);
-    const card = document.createElement("article");
-    card.className = "intel-card";
-    card.innerHTML = `
-      <header><strong>${body.track_id}</strong><span class="${badgeClassForThreat(body.threat_level)}">${formatLabel(body.threat_level)}</span></header>
-      <p>${body.site || "Unknown site"} reporting ${formatLabel(body.threat_level)} posture at confidence ${Number(body.confidence || 0).toFixed(3)}.</p>
-      <small>${body.node_id} | ${formatTime(getRecordTimeMs(record))} | ${(body.contributing_modalities || []).join(", ")}</small>`;
-    target.appendChild(card);
-  });
-}
-
-function renderOrchestrationFeed(orchestrationPlan) {
-  const target = document.getElementById("orchestrationFeed");
-  target.innerHTML = "";
-  const digest = orchestrationPlan.policy_digest || {};
-  const digestCard = document.createElement("article");
-  digestCard.className = "intel-card";
-  digestCard.innerHTML = `
-    <header><strong>Protocol Digest</strong><span class="data-pill data-pill-secondary">${formatLabel(digest.high_priority_protocol || "none")}</span></header>
-    <p>Priority traffic prefers ${formatLabel(digest.high_priority_protocol || "n/a")}, low-bandwidth exchange falls back to ${formatLabel(digest.low_bandwidth_protocol || "n/a")}, and regional exchange is handled over ${formatLabel(digest.regional_exchange_protocol || "n/a")}.</p>
-    <small>Mesh discovery: ${formatLabel(digest.mesh_discovery_protocol || "n/a")}</small>`;
-  target.appendChild(digestCard);
-
-  const actions = [...(orchestrationPlan.routing_actions || []), ...(orchestrationPlan.relay_actions || [])];
-  if (!actions.length) {
-    const empty = document.createElement("div");
-    empty.className = "empty-state";
-    empty.textContent = "No orchestration actions available";
-    target.appendChild(empty);
-    return;
-  }
-  actions.forEach((action) => {
-    const card = document.createElement("article");
-    card.className = "intel-card";
-    const primaryLabel = action.priority || action.assignment || "planned";
-    const secondary = action.preferred_protocol || action.target_zone || action.secondary_protocol || "n/a";
-    card.innerHTML = `
-      <header><strong>${action.node_id}</strong><span class="data-pill data-pill-primary">${formatLabel(primaryLabel)}</span></header>
-      <p>${Object.entries(action).filter(([k]) => k !== "node_id").map(([k, v]) => `${formatLabel(k)}: ${formatLabel(v)}`).join(" | ")}</p>
-      <small>Primary route target: ${formatLabel(secondary)}</small>`;
-    target.appendChild(card);
-  });
-}
-
-function renderGovernance(stats, governanceAudit) {
-  const summary = document.getElementById("governanceSummary");
-  const feed = document.getElementById("governanceFeed");
-  summary.innerHTML = "";
-  feed.innerHTML = "";
-
-  [
-    ["Registered Nodes", stats.registered_node_count || 0],
-    ["Active Nodes", stats.active_node_count || 0],
-    ["Trust Posture", stats.registered_node_count ? "Allowlisted" : "Open"],
-    ["Recent Audit Events", governanceAudit.length],
-  ].forEach(([label, value]) => {
-    const row = document.createElement("div");
-    row.className = "flex items-center justify-between border-b border-outline-variant/10 pb-2 font-mono text-[0.68rem] uppercase tracking-[0.08em]";
-    row.innerHTML = `<span class="text-on-surface-variant">${label}</span><strong class="text-on-surface">${value}</strong>`;
-    summary.appendChild(row);
-  });
-
-  if (!governanceAudit.length) {
-    feed.innerHTML = `<div class="empty-state">No governance audit events yet</div>`;
-    return;
-  }
-  governanceAudit.slice(0, 5).forEach((event) => {
-    const card = document.createElement("article");
-    card.className = "intel-card";
-    card.innerHTML = `
-      <header><strong>Round ${String(event.federated_round || "--").slice(-4)}</strong><span class="data-pill data-pill-tertiary">${formatLabel(event.regional_summary?.dominant_threat_level || "none")}</span></header>
-      <p>Audit snapshot recorded ${event.regional_summary?.active_nodes || 0} active nodes and ${event.regional_summary?.active_tracks || 0} active tracks.</p>
-      <small>${formatTime(event.timestamp_ms)} | Priority: ${formatLabel(event.policy_digest?.high_priority_protocol || "n/a")}</small>`;
-    feed.appendChild(card);
-  });
-}
-
-function renderNodeRegistry(nodeRegistry, stats, activeRecords) {
-  const target = document.getElementById("nodeRegistryPanel");
-  target.innerHTML = "";
-  const activeNodeIds = new Set(activeRecords.map((r) => getBody(r).node_id));
-  const nodes = nodeRegistry.nodes || [];
-  if (!nodes.length) {
-    target.innerHTML = `<div class="empty-state">No node registry data available</div>`;
-    return;
-  }
-  nodes.forEach((node) => {
-    const active = activeNodeIds.has(node.node_id);
-    const card = document.createElement("article");
-    card.className = "intel-card";
-    card.innerHTML = `
-      <header><strong>${node.node_id}</strong><span class="data-pill ${active ? "data-pill-secondary" : "data-pill-primary"}">${active ? "Active" : "Standby"}</span></header>
-      <p>${formatLabel(node.role)} operating in ${formatLabel(node.zone)} with ${(node.capabilities || []).join(", ")} capability coverage.</p>
-      <small>Protocols: ${(node.protocols || []).join(", ")} | Learning: ${(node.learning_layers || []).join(", ")}</small>`;
-    target.appendChild(card);
-  });
-}
-
-function buildTicker(stats, activeRecords, alerts, orchestrationPlan) {
-  const parts = [];
-  if (!connState.online) {
-    parts.push(`⚠ Server unreachable — ${connState.consecutiveFailures} failure${connState.consecutiveFailures !== 1 ? "s" : ""}. Auto-retry in ${Math.round(connState.retryDelayMs / 1000)}s`);
-  }
-  if (activeRecords.length) {
-    const body = getBody(activeRecords[0]);
-    parts.push(`Node ${body.node_id} reported ${body.track_id} at confidence ${Number(body.confidence || 0).toFixed(3)}`);
-    parts.push(`Dominant threat ${formatLabel(body.threat_level)}`);
-    parts.push(`Active trackers ${stats.latest_track_count || 0}`);
-    parts.push(`Throughput ${formatNumber(stats.throughput_events_per_min || 0, 1)} pkt/min`);
-  } else if (alerts.length) {
-    const body = getBody(alerts[0]);
-    parts.push(`High-interest feed retained ${body.track_id} from ${body.node_id}`);
-    parts.push(`Routing posture ${formatLabel(orchestrationPlan.policy_digest?.high_priority_protocol || "dds")}`);
-    parts.push(`Waiting for new rolling-window activity`);
-  } else {
-    parts.push(`Rolling detection window ${minutesLabel(stats.activity_window_seconds)} active`);
-    parts.push(`Registry posture intact`);
-    parts.push(`Waiting for fresh semantic envelopes`);
-  }
-  if (connState.lastSuccessMs) parts.push(`Last sync ${formatRelativeTime(connState.lastSuccessMs)}`);
-  return parts.join("  ·  ");
-}
-
-// ─── Last-known-good cache ────────────────────────────────────────────────────
-
-let lastGoodData = null;
-
-// ─── Core refresh ─────────────────────────────────────────────────────────────
-
-async function refresh() {
-  if (connState.isRefreshing) return;
-  connState.isRefreshing = true;
-  connState.lastAttemptMs = Date.now();
-  updateConnectionBadge();
-
-  // Lightweight health probe first
-  const health = await loadJson("/healthz", null);
-
-  if (health === null) {
-    connState.consecutiveFailures++;
-    connState.online = false;
-    connState.isRefreshing = false;
-    connState.retryDelayMs = Math.min(connState.retryDelayMs * 1.5, connState.maxRetryDelayMs);
-    updateConnectionBadge();
-    updateEndpointHealthPanel();
-    renderOfflineBanner(true);
-
-    document.getElementById("tickerStream").textContent = lastGoodData
-      ? buildTicker(lastGoodData.stats, lastGoodData.activeRecords, lastGoodData.alerts, lastGoodData.orchestrationPlan)
-      : `⚠ Server not responding on localhost:8090 — failure #${connState.consecutiveFailures}. Retry in ${Math.round(connState.retryDelayMs / 1000)}s.`;
-
-    scheduleNextRefresh();
-    return;
+  function assignSnapshot() {
+    if (!window.caesarAPI || typeof window.caesarAPI.getState !== "function") {
+      return;
+    }
+    const snapshot = window.caesarAPI.getState();
+    state.stats = state.stats || snapshot.stats;
+    state.latest = snapshot.latest || state.latest;
+    state.regionalSummary = snapshot.regionalSummary || state.regionalSummary;
+    state.learningPlan = snapshot.learningPlan || state.learningPlan;
+    state.nodeRegistry = snapshot.nodeRegistry || state.nodeRegistry;
+    state.alerts = snapshot.highInterest || state.alerts;
+    state.online = Boolean(snapshot.online);
+    state.lastSyncMs = snapshot.lastSuccessMs || state.lastSyncMs;
   }
 
-  // Server alive — fetch all endpoints with individual per-endpoint fallbacks
-  const EMPTY_STATS = {
-    activity_window_seconds: 900, active_cutoff_ms: Date.now() - 900000,
-    latest_track_count: 0, high_interest_recent_count: 0, active_high_interest_count: 0,
-    node_counts: {}, threat_counts: {}, modality_counts: {}, site_counts: {},
-    registered_node_count: 0, active_node_count: 0, throughput_events_per_min: 0,
-    anomaly_probability: 0, node_health_ratio: 0, fed_alignment: 0,
-    federated_participant_count: 0, recent_journal_count: 0, last_detection_ms: null, stale: true,
+  // Camera Overlay Logic
+  let activeCameraNode = null;
+  let camUpdateInterval = null;
+  let _camFrameCount = 0;
+  let _camFpsTimer = null;
+
+  window.openCamera = function(nodeId) {
+    const modal = document.getElementById("cameraModal");
+    if (!modal) return;
+
+    activeCameraNode = nodeId;
+    document.getElementById("camNodeId").textContent = nodeId;
+    modal.style.display = "flex";
+
+    // ── Wire the LIVE MJPEG stream ──
+    const streamImg = document.getElementById("camStream");
+    const fallback  = document.getElementById("camStreamFallback");
+    const statusEl  = document.getElementById("camStreamStatus");
+    const fpsEl     = document.getElementById("camFps");
+
+    if (streamImg) {
+      streamImg.style.display = "block";
+      if (fallback) fallback.style.display = "none";
+      streamImg.src = `/api/camera-stream?node=${encodeURIComponent(nodeId)}&_=${Date.now()}`;
+
+      // FPS counter — count how many times the <img> fires "load" per second
+      _camFrameCount = 0;
+      clearInterval(_camFpsTimer);
+      streamImg.onload = () => { _camFrameCount++; };
+      _camFpsTimer = setInterval(() => {
+        if (fpsEl) fpsEl.textContent = `${_camFrameCount.toFixed ? _camFrameCount : 0} fps`;
+        _camFrameCount = 0;
+      }, 1000);
+
+      if (statusEl) statusEl.textContent = "● STREAMING";
+    }
+
+    // ── Animate bounding box + update sidebar from live track data ──
+    const box = document.getElementById("camTargetBox");
+    const label = document.getElementById("camTargetLabel");
+
+    camUpdateInterval = setInterval(() => {
+      const top  = 30 + Math.random() * 30;
+      const left = 20 + Math.random() * 40;
+      if (box) { box.style.top = `${top}%`; box.style.left = `${left}%`; }
+
+      const tracks = getActiveRecords().filter(r => getBody(r).node_id === nodeId);
+      const trackCountEl = document.getElementById("camTrackCount");
+      if (trackCountEl) trackCountEl.textContent = tracks.length || "0";
+
+      if (tracks.length > 0) {
+        const t = getBody(tracks[0]);
+        if (label) label.textContent = `${t.threat_level} [${Number(t.confidence||0).toFixed(2)}]`;
+        if (box)   box.style.borderColor = THREAT_COLORS[t.threat_level] || "var(--cyan)";
+        const reasonEl = document.getElementById("camReasoning");
+        if (reasonEl) reasonEl.textContent = `"${t.class_label || t.threat_level || "Monitoring zone"}"` ;
+        const inferEl = document.getElementById("camInferenceStatus");
+        if (inferEl) { inferEl.textContent = "ACTIVE"; inferEl.style.color = "var(--green)"; }
+      } else {
+        if (label) label.textContent = "scanning...";
+        if (box)   box.style.borderColor = "var(--cyan)";
+      }
+    }, 2000);
   };
 
-  const [stats, latest, alerts, regionalSummary, learningPlan, orchestrationPlan, nodeRegistry, governanceAudit] =
-    await Promise.all([
-      loadJson("/api/stats", EMPTY_STATS),
-      loadJson("/api/latest", {}),
-      loadJson("/api/high-interest?limit=40", []),
-      loadJson("/api/regional-summary", { region: "Bwari, FCT" }),
-      loadJson("/api/learning-plan", { supervised_learning: [], reinforcement_learning: [], semi_supervised_learning: [], federated_round: {} }),
-      loadJson("/api/orchestration", { policy_digest: {}, routing_actions: [], relay_actions: [] }),
-      loadJson("/api/node-registry", { nodes: [], cluster_id: "uriel orchestrator" }),
-      loadJson("/api/governance-audit?limit=10", []),
-    ]);
+  window.closeCamera = function() {
+    const modal = document.getElementById("cameraModal");
+    if (modal) modal.style.display = "none";
+    if (camUpdateInterval) clearInterval(camUpdateInterval);
+    clearInterval(_camFpsTimer);
+    const streamImg = document.getElementById("camStream");
+    if (streamImg) { streamImg.src = ""; streamImg.onload = null; } // stop MJPEG download
+    activeCameraNode = null;
+  };
 
-  connState.online = true;
-  connState.consecutiveFailures = 0;
-  connState.lastSuccessMs = Date.now();
-  connState.retryDelayMs = 2000;
-  connState.isRefreshing = false;
+  window.addEventListener("caesar:stats", (event) => {
+    state.stats = event.detail || {};
+    scheduleRender();
+  });
 
-  renderOfflineBanner(false);
-  updateConnectionBadge();
-  updateEndpointHealthPanel();
-  renderDataStalenessWarning(stats);
+  window.addEventListener("caesar:latest", (event) => {
+    state.latest = event.detail || {};
+    scheduleRender();
+  });
 
-  const activeRecords = getActiveRecords(latest, stats.active_cutoff_ms || 0);
-  lastGoodData = { stats, activeRecords, alerts, orchestrationPlan };
+  window.addEventListener("caesar:regional-summary", (event) => {
+    state.regionalSummary = event.detail || {};
+    scheduleRender();
+  });
 
-  updateHeader(stats, regionalSummary, nodeRegistry);
-  renderMetricCards(stats);
-  setMissionMode(determineMissionMode(stats, regionalSummary));
-  document.getElementById("missionNarrative").textContent = buildMissionNarrative(stats, regionalSummary, learningPlan, nodeRegistry);
-  renderMap(stats, regionalSummary, activeRecords, nodeRegistry);
-  renderHeatmap(stats, activeRecords, nodeRegistry);
-  renderConfidenceBars(stats, activeRecords);
-  renderLearningFabric(stats, learningPlan, nodeRegistry, activeRecords);
-  renderTrackLog(activeRecords, stats);
-  renderAlertsFeed(alerts, stats);
-  renderOrchestrationFeed(orchestrationPlan);
-  renderGovernance(stats, governanceAudit);
-  renderNodeRegistry(nodeRegistry, stats, activeRecords);
-  document.getElementById("tickerStream").textContent = buildTicker(stats, activeRecords, alerts, orchestrationPlan);
+  window.addEventListener("caesar:learning-plan", (event) => {
+    state.learningPlan = event.detail || {};
+    scheduleRender();
+  });
 
-  scheduleNextRefresh();
-}
+  window.addEventListener("caesar:node-registry", (event) => {
+    state.nodeRegistry = event.detail || { nodes: [] };
+    scheduleRender();
+  });
 
-// ─── Scheduler with countdown ─────────────────────────────────────────────────
+  window.addEventListener("caesar:high-interest", (event) => {
+    state.alerts = Array.isArray(event.detail) ? event.detail : [];
+    scheduleRender();
+  });
 
-function scheduleNextRefresh() {
-  clearTimeout(connState.refreshTimer);
-  const delay = connState.online ? connState.refreshIntervalMs : connState.retryDelayMs;
-  connState.refreshTimer = setTimeout(() => refresh().catch(console.error), delay);
+  window.addEventListener("caesar:governance-audit", (event) => {
+    state.governanceAudit = Array.isArray(event.detail) ? event.detail : [];
+    scheduleRender();
+  });
 
-  // Live countdown in badge when offline
-  if (!connState.online) {
-    let remaining = Math.round(delay / 1000);
-    const ticker = setInterval(() => {
-      remaining--;
-      const label = document.getElementById("connLabel");
-      if (!label || connState.online || remaining <= 0) { clearInterval(ticker); return; }
-      label.textContent = `Offline · retry in ${remaining}s`;
-    }, 1000);
-  }
-}
+  window.addEventListener("caesar:tick", (event) => {
+    state.online = Boolean(event.detail?.online);
+    state.lastSyncMs = event.detail?.lastSyncMs || state.lastSyncMs;
+    scheduleRender();
+  });
 
-// ─── Boot ─────────────────────────────────────────────────────────────────────
-
-document.getElementById("refreshFeed").addEventListener("click", () => {
-  clearTimeout(connState.refreshTimer);
-  connState.retryDelayMs = 2000;
-  refresh().catch(console.error);
-});
-
-document.getElementById("retryBtn")?.addEventListener("click", () => {
-  clearTimeout(connState.refreshTimer);
-  connState.retryDelayMs = 2000;
-  refresh().catch(console.error);
-});
-
-updateConnectionBadge();
-refresh().catch((err) => {
-  console.error(err);
-  document.getElementById("tickerStream").textContent = `Console error: ${err.message}`;
-});
+  assignSnapshot();
+  scheduleRender();
+  window.caesarAPI?.forceRefresh?.();
+})();

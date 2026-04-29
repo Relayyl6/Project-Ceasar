@@ -3,6 +3,24 @@ use base64::Engine;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 
 use crate::protocol::{FusedTrack, SignedEnvelope};
+use snow::{Builder, HandshakeState};
+
+static NOISE_PATTERN: &'static str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
+
+pub struct NoiseSession {
+    pub state: HandshakeState,
+}
+
+impl NoiseSession {
+    pub fn new_initiator(local_private: &[u8], remote_public: &[u8]) -> Result<Self> {
+        let builder = Builder::new(NOISE_PATTERN.parse()?);
+        let state = builder
+            .local_private_key(local_private)
+            .remote_public_key(remote_public)
+            .build_initiator()?;
+        Ok(Self { state })
+    }
+}
 
 pub struct EnvelopeSigner {
     signing_key: SigningKey,
