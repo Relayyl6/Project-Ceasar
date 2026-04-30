@@ -57,10 +57,10 @@ uart_data_port = "/dev/ttyAMA0"
 
 [inference]
 mode = "ort_native"
-model_yolo_world = "models/yolo_world_v2_l.onnx"
-model_gemini_er  = "models/gemini_robotics_er.onnx"
+model_yolo_world = "models/yolo_world_v2_s.onnx"
+model_gemini_er  = "models/gemini_robotics_er_1_6.onnx"
 model_seq2seq    = "models/seq2seq_thermal_lstm.onnx"
-model_pxadmm     = "models/pxadmm_anomaly_tracker.onnx"
+model_pxadmm     = "models/pxadmm_anomaly.onnx"
 vocabulary       = [
   "human intruder", "armed person", "civilian drone", "military drone",
   "tractor", "truck", "motorcycle", "car", "animal",
