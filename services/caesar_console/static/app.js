@@ -325,7 +325,7 @@
       marker.bindPopup(
         `<strong>${node.nodeId}</strong><br>Role: ${formatLabel(node.role)}<br>Zone: ${formatLabel(
           node.zone
-        )}<br>Status: ${node.active ? "Active" : "Standby"}<br><button onclick="window.openCamera('${node.nodeId}')" style="margin-top:8px; width:100%; padding:6px; background:var(--cyan); color:#000; border:none; font-family:'Share Tech Mono',monospace; cursor:pointer; font-weight:bold;">[ OPEN CAMERA FEED ]</button>`
+        )}<br>Status: ${node.active ? "Active" : "Standby"}<br><button onclick="window.focusPipCamera('${node.nodeId}')" style="margin-top:8px; width:100%; padding:6px; background:var(--cyan); color:#000; border:none; font-family:'Share Tech Mono',monospace; cursor:pointer; font-weight:bold;">[ FOCUS LIVE FEED ]</button>`
       );
       markerLayer.addLayer(marker);
     });
@@ -681,6 +681,7 @@
     renderYoloFeed(activeRecords);
     renderAnomalyLog(activeRecords);
     renderGovernanceLog();
+    updatePipCamera(activeRecords);
   }
 
   function scheduleRender() {
@@ -706,79 +707,83 @@
     state.lastSyncMs = snapshot.lastSuccessMs || state.lastSyncMs;
   }
 
-  // Camera Overlay Logic
+  // PIP Camera Auto-Switching Logic
   let activeCameraNode = null;
-  let camUpdateInterval = null;
-  let _camFrameCount = 0;
-  let _camFpsTimer = null;
 
-  window.openCamera = function(nodeId) {
-    const modal = document.getElementById("cameraModal");
-    if (!modal) return;
+  function updatePipCamera(activeRecords) {
+    const pip = document.getElementById("cameraPip");
+    if (!pip) return;
 
-    activeCameraNode = nodeId;
-    document.getElementById("camNodeId").textContent = nodeId;
-    modal.style.display = "flex";
+    // Find the most recent high-interest track
+    const hiTracks = activeRecords.filter(r => getBody(r).threat_level === "high-interest");
+    const targetRecord = hiTracks.length > 0 ? hiTracks[0] : (activeRecords.length > 0 ? activeRecords[0] : null);
 
-    // ── Wire the LIVE MJPEG stream ──
+    if (!targetRecord) {
+      document.getElementById("camNodeId").textContent = "IDLE";
+      document.getElementById("camTargetLabel").textContent = "scanning...";
+      document.getElementById("camTargetBox").style.borderColor = "var(--cyan)";
+      document.getElementById("camStream").style.display = "none";
+      document.getElementById("camStreamFallback").style.display = "flex";
+      return;
+    }
+
+    const t = getBody(targetRecord);
+    const targetNode = t.node_id;
+
+    // Switch stream if node changed
+    if (activeCameraNode !== targetNode) {
+      activeCameraNode = targetNode;
+      document.getElementById("camNodeId").textContent = targetNode;
+      const streamImg = document.getElementById("camStream");
+      const fallback  = document.getElementById("camStreamFallback");
+      
+      if (streamImg) {
+        streamImg.style.display = "block";
+        if (fallback) fallback.style.display = "none";
+        // To avoid endless reloading in sim, we use a static fallback if it's a simulated node without a real server,
+        // but for this UI purpose, we just point it to the node stream URL.
+        streamImg.src = `/api/camera-stream?node=${encodeURIComponent(targetNode)}&_=${Date.now()}`;
+      }
+    }
+
+    // Animate bounding box
+    const box = document.getElementById("camTargetBox");
+    const label = document.getElementById("camTargetLabel");
+
+    if (box) {
+      // Jitter box slightly for "live" feel
+      const top = 30 + (Math.random() * 20);
+      const left = 25 + (Math.random() * 30);
+      box.style.top = `${top}%`;
+      box.style.left = `${left}%`;
+      box.style.borderColor = THREAT_COLORS[t.threat_level] || "var(--cyan)";
+    }
+
+    if (label) {
+      label.textContent = `${t.threat_level} [${Number(t.confidence||0).toFixed(2)}]`;
+    }
+  }
+
+  // Allow map marker popups to manually pin the PIP camera to a specific node.
+  // Once pinned, the auto-switching pauses for 30s before resuming.
+  let _pipPinTimeout = null;
+  window.focusPipCamera = function(nodeId) {
+    if (map) map.closePopup();
+    // Override activeCameraNode so the next updatePipCamera call switches to this node
+    activeCameraNode = null; // force a stream reload
     const streamImg = document.getElementById("camStream");
     const fallback  = document.getElementById("camStreamFallback");
-    const statusEl  = document.getElementById("camStreamStatus");
-    const fpsEl     = document.getElementById("camFps");
-
+    const nodeLabel = document.getElementById("camNodeId");
+    if (nodeLabel) nodeLabel.textContent = nodeId;
     if (streamImg) {
       streamImg.style.display = "block";
       if (fallback) fallback.style.display = "none";
       streamImg.src = `/api/camera-stream?node=${encodeURIComponent(nodeId)}&_=${Date.now()}`;
-
-      // FPS counter — count how many times the <img> fires "load" per second
-      _camFrameCount = 0;
-      clearInterval(_camFpsTimer);
-      streamImg.onload = () => { _camFrameCount++; };
-      _camFpsTimer = setInterval(() => {
-        if (fpsEl) fpsEl.textContent = `${_camFrameCount.toFixed ? _camFrameCount : 0} fps`;
-        _camFrameCount = 0;
-      }, 1000);
-
-      if (statusEl) statusEl.textContent = "● STREAMING";
     }
-
-    // ── Animate bounding box + update sidebar from live track data ──
-    const box = document.getElementById("camTargetBox");
-    const label = document.getElementById("camTargetLabel");
-
-    camUpdateInterval = setInterval(() => {
-      const top  = 30 + Math.random() * 30;
-      const left = 20 + Math.random() * 40;
-      if (box) { box.style.top = `${top}%`; box.style.left = `${left}%`; }
-
-      const tracks = getActiveRecords().filter(r => getBody(r).node_id === nodeId);
-      const trackCountEl = document.getElementById("camTrackCount");
-      if (trackCountEl) trackCountEl.textContent = tracks.length || "0";
-
-      if (tracks.length > 0) {
-        const t = getBody(tracks[0]);
-        if (label) label.textContent = `${t.threat_level} [${Number(t.confidence||0).toFixed(2)}]`;
-        if (box)   box.style.borderColor = THREAT_COLORS[t.threat_level] || "var(--cyan)";
-        const reasonEl = document.getElementById("camReasoning");
-        if (reasonEl) reasonEl.textContent = `"${t.class_label || t.threat_level || "Monitoring zone"}"` ;
-        const inferEl = document.getElementById("camInferenceStatus");
-        if (inferEl) { inferEl.textContent = "ACTIVE"; inferEl.style.color = "var(--green)"; }
-      } else {
-        if (label) label.textContent = "scanning...";
-        if (box)   box.style.borderColor = "var(--cyan)";
-      }
-    }, 2000);
-  };
-
-  window.closeCamera = function() {
-    const modal = document.getElementById("cameraModal");
-    if (modal) modal.style.display = "none";
-    if (camUpdateInterval) clearInterval(camUpdateInterval);
-    clearInterval(_camFpsTimer);
-    const streamImg = document.getElementById("camStream");
-    if (streamImg) { streamImg.src = ""; streamImg.onload = null; } // stop MJPEG download
-    activeCameraNode = null;
+    activeCameraNode = nodeId;
+    // Pause auto-switching for 30s so the operator can observe this node
+    clearTimeout(_pipPinTimeout);
+    _pipPinTimeout = setTimeout(() => { activeCameraNode = null; }, 30000);
   };
 
   window.addEventListener("caesar:stats", (event) => {

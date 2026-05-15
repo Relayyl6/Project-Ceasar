@@ -213,19 +213,19 @@
     @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
     .blink { animation:blink 1s ease-in-out infinite; }
 
-    /* ── CAMERA OVERLAY ── */
-    #cameraModal {
-      display:none; position:fixed; top:48px; left:220px; right:0; bottom:0;
+    /* ── PIP CAMERA OVERLAY ── */
+    #cameraPip {
+      position:absolute; bottom:20px; left:20px; width:360px; height:240px;
       background:rgba(7,12,16,0.92); z-index:2000; backdrop-filter:blur(10px);
-      flex-direction:column; padding:20px;
+      border:1px solid var(--border-solid); display:flex; flex-direction:column;
+      box-shadow: 0 0 20px rgba(0,0,0,0.8);
+      pointer-events: none; /* Let map clicks pass through outside the PIP content if needed, but actually PIP shouldn't pass clicks if it has buttons */
     }
     .cam-header {
-      display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;
-      border-bottom:1px solid var(--border-solid); padding-bottom:8px;
+      display:flex; justify-content:space-between; align-items:center; margin-bottom:0;
+      border-bottom:1px solid var(--border-solid); padding:4px 8px; background: rgba(0,212,255,0.1);
     }
-    .cam-title { font-family:'Orbitron',monospace; font-size:1.2rem; font-weight:700; color:var(--cyan); text-transform:uppercase; }
-    .cam-close { color:var(--text-dim); cursor:pointer; font-size:24px; transition:.15s; }
-    .cam-close:hover { color:var(--red); }
+    .cam-title { font-family:'Orbitron',monospace; font-size:0.8rem; font-weight:700; color:var(--cyan); text-transform:uppercase; display:flex; align-items:center;}
     /* ── CAMERA STREAM ── */
     .cam-container {
       flex:1; border:1px solid var(--border-solid); position:relative; overflow:hidden;
@@ -354,6 +354,25 @@
         <div class="legend-item"><div class="legend-dot" style="background:var(--green)"></div> MESH PATH (ACTIVE)</div>
         <div class="legend-item"><div class="legend-dot" style="background:var(--amber)"></div> ANOMALY ZONE</div>
       </div>
+      <!-- PIP Camera Overlay -->
+      <div id="cameraPip">
+        <div class="cam-header">
+          <div class="cam-title"><span class="material-symbols-outlined" style="vertical-align:bottom;margin-right:4px;font-size:16px;">videocam</span> <span id="camNodeId">--</span></div>
+          <span id="camStreamStatus" style="font-family:'Share Tech Mono',monospace;font-size:.5rem;color:var(--green);letter-spacing:.1em;">● LIVE</span>
+        </div>
+        <div class="cam-container">
+          <img id="camStream" src="" alt="" onerror="this.style.display='none'; document.getElementById('camStreamFallback').style.display='flex'">
+          <div id="camStreamFallback" class="cam-stream-err" style="display:none;">
+            <span class="material-symbols-outlined" style="font-size:24px;color:var(--text-dim)">videocam_off</span>
+            <span style="font-size:0.6rem">Camera offline</span>
+          </div>
+          <div class="cam-overlay"></div>
+          <div class="cam-crosshair"></div>
+          <div class="cam-box" id="camTargetBox" style="top:40%;left:35%;width:60px;height:90px;">
+            <div class="cam-box-label" id="camTargetLabel">scanning</div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <div class="right-panel">
@@ -433,36 +452,7 @@
   </div>
 </main>
 
-  <div id="cameraModal">
-  <div class="cam-header">
-    <div class="cam-title"><span class="material-symbols-outlined" style="vertical-align:bottom;margin-right:8px;font-size:24px;">videocam</span> LIVE OPTICAL FEED: <span id="camNodeId">--</span></div>
-    <div style="display:flex;align-items:center;gap:12px;">
-      <span id="camStreamStatus" style="font-family:'Share Tech Mono',monospace;font-size:.6rem;color:var(--green);letter-spacing:.1em;">● STREAMING</span>
-      <span class="material-symbols-outlined cam-close" onclick="closeCamera()">close</span>
-    </div>
-  </div>
-  <div class="cam-container">
-    <img id="camStream" src="" alt="" onerror="this.style.display='none'; document.getElementById('camStreamFallback').style.display='flex'">
-    <div id="camStreamFallback" class="cam-stream-err" style="display:none;">
-      <span class="material-symbols-outlined" style="font-size:48px;color:var(--text-dim)">videocam_off</span>
-      <span>Camera offline — connect webcam or RPi CSI module</span>
-      <span style="color:var(--cyan);font-size:.55rem">pip install opencv-python  then restart server.py</span>
-    </div>
-    <div class="cam-overlay"></div>
-    <div class="cam-crosshair"></div>
-    <div class="cam-box" id="camTargetBox" style="top:40%;left:35%;width:120px;height:180px;">
-      <div class="cam-box-label" id="camTargetLabel">high-interest [0.94]</div>
-    </div>
-    <div class="cam-sidebar">
-      <div style="font-family:'Orbitron',monospace;color:var(--cyan);font-size:.8rem;margin-bottom:12px;border-bottom:1px solid var(--cyan);padding-bottom:4px;">YOLO-WORLD & OLLAMA</div>
-      <div class="cam-data-row"><span style="color:var(--text-dim)">INFERENCE</span><span style="color:var(--green)" id="camInferenceStatus">ACTIVE</span></div>
-      <div class="cam-data-row"><span style="color:var(--text-dim)">MODEL</span><span>yolo_world_v2_l</span></div>
-      <div class="cam-data-row"><span style="color:var(--text-dim)">FPS</span><span id="camFps">--</span></div>
-      <div class="cam-data-row"><span style="color:var(--text-dim)">TRACKS</span><span id="camTrackCount">1</span></div>
-      <div class="cam-data-row"><span style="color:var(--text-dim)">REASONING</span><span style="color:var(--amber)" id="camReasoning">"Monitoring zone"</span></div>
-    </div>
-  </div>
-</div>
+
 
 <!-- FOOTER -->
 <footer>

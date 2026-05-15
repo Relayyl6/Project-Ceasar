@@ -164,6 +164,11 @@ impl GeminiRoboticsERPipeline {
 }
 
 
+/// Spawns the standard always-on optical inference worker.
+/// **Only called when `sentinel.enabled = false` in config.**
+/// When the sentinel is active, it owns the camera and wakes the AI
+/// selectively — this function must NOT be called in that path
+/// (it would compete for the camera resource and waste cycles on clear frames).
 pub fn spawn_optical_worker(
     settings: EdgeConfig,
     mut rx: broadcast::Receiver<OpticalFrame>,
@@ -221,6 +226,51 @@ pub fn spawn_radar_worker(
     });
 }
 
+/// Context injected by the OpenCV sentinel when it hands off to the AI pipeline.
+/// The sentinel is the always-on gatekeeper; this struct carries its verdict
+/// so the AI can make informed decisions about urgency and depth of analysis.
+#[derive(Debug, Clone)]
+pub struct SentinelContext {
+    /// Normalised anomaly score from MOG2 contour analysis (0.0–1.0).
+    pub anomaly_score: f32,
+    /// Number of confirmed-change snapshots accumulated so far.
+    pub snapshot_count: usize,
+    /// true = score exceeded burst_threshold → bypass accumulation, run AI now.
+    pub burst_mode: bool,
+}
+
+/// Public entry point used by `SentinelWorker` to invoke the AI pipeline.
+///
+/// Returns `Ok(None)` when the sentinel context indicates the frame is below
+/// the burst threshold but still in accumulation range — meaning the AI should
+/// wait for more snapshots rather than burning cycles on an uncertain frame.
+/// Returns `Ok(Some(obs))` when AI inference succeeds.
+pub async fn optical_infer_with_sentinel(
+    settings: &EdgeConfig,
+    frame: OpticalFrame,
+    ctx: SentinelContext,
+) -> Result<Option<Observation>> {
+    // Only escalate to AI if:
+    // (a) burst_mode = true (score > burst_threshold), OR
+    // (b) this is a portrait-ready autonomous dispatch (snapshot_count >= min_snapshots)
+    if !ctx.burst_mode && ctx.anomaly_score < settings.sentinel.burst_threshold {
+        // In accumulation zone — sentinel will keep collecting snapshots.
+        // The AI rests.
+        return Ok(None);
+    }
+
+    println!(
+        "[caesar.{domain}][inference] Sentinel escalation — score={score:.3} snapshots={count} burst={burst}",
+        domain = settings.domain,
+        score  = ctx.anomaly_score,
+        count  = ctx.snapshot_count,
+        burst  = ctx.burst_mode,
+    );
+
+    // Run the full YOLO → Ollama → Heuristic cascade
+    optical_infer(settings, frame).await.map(Some)
+}
+
 async fn optical_infer(settings: &EdgeConfig, frame: OpticalFrame) -> Result<Observation> {
     match settings.inference.mode.as_str() {
         "heuristic" => heuristic_optical_infer(frame),
@@ -252,11 +302,11 @@ async fn optical_infer(settings: &EdgeConfig, frame: OpticalFrame) -> Result<Obs
             }
 
             // 2. FALLBACK: Ollama Vision API
-            println!("[edge.inference] ONNX primary inference failed or model missing. Seamlessly falling back to Ollama VLM API...");
+            println!("[caesar.{}.inference] ONNX unavailable — falling back to Ollama VLM", settings.domain);
             match ollama_vision_infer(settings, frame.clone()).await {
                 Ok(obs) => return Ok(obs),
                 Err(e) => {
-                    println!("[edge.inference] Ollama fallback failed: {}. Reverting to simulated heuristics.", e);
+                    println!("[caesar.{}.inference] Ollama failed: {}. Heuristic engaged.", settings.domain, e);
                     return heuristic_optical_infer(frame);
                 }
             }
@@ -267,38 +317,63 @@ async fn optical_infer(settings: &EdgeConfig, frame: OpticalFrame) -> Result<Obs
 
 async fn ollama_vision_infer(settings: &EdgeConfig, frame: OpticalFrame) -> Result<Observation> {
     let endpoint = settings.inference.ollama_endpoint.as_deref().unwrap_or("http://localhost:11434");
-    let model = settings.inference.ollama_model.as_deref().unwrap_or("llava");
-    
-    // Convert jpeg bytes to base64
+    let model    = settings.inference.ollama_model.as_deref().unwrap_or("llava");
+
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     let b64_img = STANDARD.encode(&frame.jpeg_bytes);
-    
-    let prompt = "Analyze this camera frame. If there is a threat or anomaly, what is it? Reply with a single short label like 'armed-intruder' or 'civilian-drone'. If nothing, reply 'clear'.";
-    
-    let request_body = serde_json::json!({
+
+    // Domain-aware prompt — Project Caesar multi-environment intelligence
+    let prompt = match settings.domain.as_str() {
+        "agricultural" =>
+            "You are an agricultural AI sensor on a precision farm node. \
+             Analyze this camera frame for crop changes, plant growth, water stress, \
+             pest damage, or irrigation anomalies. \
+             Reply with ONE short label such as: \
+             'crop-growth-detected', 'water-stress', 'pest-damage', 'flood-risk', \
+             'healthy-crop', 'dry-soil', or 'clear'. Nothing else.",
+        "industrial" =>
+            "You are an industrial monitoring AI on a critical infrastructure node. \
+             Analyze this camera frame for equipment anomalies, overheating, \
+             leaks, unauthorized personnel, or structural changes. \
+             Reply with ONE short label such as: \
+             'overheating-equipment', 'fluid-leak', 'unauthorized-person', \
+             'structural-anomaly', 'fire-risk', 'normal-operation', or 'clear'. Nothing else.",
+        "tactical" =>
+            "You are a tactical surveillance AI on a Caesar defense node. \
+             Analyze this camera frame for threats, intruders, drones, or vehicles. \
+             Reply with ONE short label such as: \
+             'armed-intruder', 'civilian-drone', 'military-drone', 'suspicious-vehicle', \
+             'person-running', 'crowd-forming', or 'clear'. Nothing else.",
+        _ =>
+            "Analyze this camera frame. Identify the most significant object or anomaly. \
+             Reply with ONE short label. If nothing notable, reply 'clear'.",
+    };
+
+    let body = serde_json::json!({
         "model": model,
         "prompt": prompt,
         "images": [b64_img],
         "stream": false
     });
-    
+
     let client = reqwest::Client::new();
-    let url = format!("{}/api/generate", endpoint);
-    
-    let resp = client.post(&url)
-        .json(&request_body)
-        .send()
-        .await
-        .context("Failed to connect to Ollama API")?;
-        
-    let resp_json: serde_json::Value = resp.json().await?;
-    let label = resp_json["response"].as_str().unwrap_or("unknown-anomaly").trim().to_lowercase();
-    
+    let resp_json: serde_json::Value = client
+        .post(format!("{}/api/generate", endpoint))
+        .json(&body)
+        .send().await
+        .context("Failed to connect to Ollama API")?
+        .json().await?;
+
+    let label      = resp_json["response"].as_str().unwrap_or("unknown-anomaly").trim().to_lowercase();
+    let eval_count = resp_json["eval_count"].as_u64().unwrap_or(5);
+    // Shorter, more direct answers score higher confidence
+    let confidence = (0.84 - (eval_count.saturating_sub(3) as f32 * 0.012)).clamp(0.60, 0.84);
+
     Ok(Observation {
         track_hint: format!("ollama-track-{}", frame.sequence % 100),
         timestamp_ms: frame.timestamp_ms,
         modality: Modality::Optical,
-        confidence: 0.82, // VLM confidence approximation — conservative vs ONNX
+        confidence,
         class_label: label.clone(),
         position_m: (
             20.0 + (frame.sequence % 20) as f32,

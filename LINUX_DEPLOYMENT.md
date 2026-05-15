@@ -1,0 +1,477 @@
+# Project Caesar — Linux Deployment & Hardware Hookup Guide
+
+This guide covers the complete process for deploying Project Caesar on a Linux environment and physically connecting hardware devices — cameras, GPIO relays, UART microcontrollers, and MQTT-controlled peripherals — that will act autonomously in response to AI detections.
+
+---
+
+## Table of Contents
+
+1. [System Prerequisites](#1-system-prerequisites)
+2. [Compiling the Codebase](#2-compiling-the-codebase)
+3. [Configuring the Hub (Core)](#3-configuring-the-hub-core)
+4. [Configuring the Edge Node](#4-configuring-the-edge-node)
+5. [Connecting Hardware Devices (Actuators)](#5-connecting-hardware-devices-actuators)
+   - [5.1 GPIO Relay (Raspberry Pi / Jetson)](#51-gpio-relay---direct-physical-control)
+   - [5.2 UART Serial Device (Arduino / MCU)](#52-uart-serial-device---microcontroller-effectors)
+   - [5.3 MQTT Broker (Smart Devices / Home Automation)](#53-mqtt-broker---smart-devices--iot-peripherals)
+6. [Connecting a Camera](#6-connecting-a-camera)
+7. [Launching the Dashboard Console](#7-launching-the-dashboard-console)
+8. [Running as Systemd Services](#8-running-as-systemd-services)
+9. [How AI Detections Trigger Physical Actions](#9-how-ai-detections-trigger-physical-actions)
+
+---
+
+## 1. System Prerequisites
+
+### Install Core Build Tools & OpenCV
+
+```bash
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y \
+    build-essential \
+    pkg-config \
+    cmake \
+    libopencv-dev \
+    libssl-dev \
+    v4l-utils \
+    python3-pip \
+    mosquitto \
+    mosquitto-clients
+```
+
+### Install Rust
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source $HOME/.cargo/env
+rustup update stable
+```
+
+### Install Ollama (VLM Fallback Pipeline)
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+ollama pull llava
+```
+
+---
+
+## 2. Compiling the Codebase
+
+Clone the repository, then build the entire workspace. On Linux, OpenCV resolves automatically through `pkg-config` — no manual environment variables required:
+
+```bash
+git clone <your-repo-url> project-caesar
+cd project-caesar
+cargo build --release
+```
+
+Compiled binaries will be at:
+- **Hub:** `target/release/caesar-hub`
+- **Edge Node:** `target/release/uriel-edge-node`
+
+> **Raspberry Pi Note:** Compilation on a Pi 4/5 takes ~15-20 minutes due to limited RAM. You can cross-compile from an x86 machine using `cross` and the `aarch64-unknown-linux-gnu` target for faster builds.
+
+---
+
+## 3. Configuring the Hub (Core)
+
+The Hub is the regional intelligence aggregator. Run it on your primary Linux server.
+
+### 3.1 Hub Config (`configs/hub-dev.toml`)
+
+```toml
+bind_address = "0.0.0.0:7878"
+data_dir     = "/var/lib/caesar/hub"
+```
+
+### 3.2 Start the Hub
+
+```bash
+./target/release/caesar-hub serve --config configs/hub-dev.toml
+```
+
+---
+
+## 4. Configuring the Edge Node
+
+All configuration lives in `configs/edge-dev.toml`. Edit this file for each physical edge device.
+
+### 4.1 Core Node Identity
+
+```toml
+node_id          = "tower-bwari-alpha"   # Unique name for this node
+publish_topic    = "caesar_tactical_intel"
+loop_count       = 0                     # 0 = run forever
+fusion_window_ms = 600
+threat_threshold = 0.72
+ed25519_seed_hex = "<your-32-byte-hex-seed>"
+domain           = "tactical"            # "agricultural" | "industrial" | "tactical" | "general"
+
+[location]
+site      = "Bwari"
+latitude  = 9.2797
+longitude = 7.3781
+
+[uplink]
+mode     = "tcp_jsonl"
+tcp_addr = "192.168.1.100:7878"  # IP of the machine running caesar-hub
+```
+
+### 4.2 Enable the Sentinel Pipeline
+
+Set `sentinel.enabled = true` when a real camera is attached:
+
+```toml
+[sentinel]
+enabled               = true    # FLIP THIS ON with a real camera
+device_id             = 0       # /dev/video0 → 0, /dev/video1 → 1
+fps                   = 24
+motion_area_threshold = 500.0
+anomaly_threshold     = 0.30
+burst_threshold       = 0.70
+min_snapshots         = 8
+autonomous_confidence = 0.87
+snapshot_dir          = "data/snapshots"
+mjpeg_port            = 8090   # Serves live camera feed to the dashboard
+```
+
+---
+
+## 5. Connecting Hardware Devices (Actuators)
+
+This is the core integration layer. When the AI pipeline detects a threat with sufficient confidence, it calls `ActuatorBus::dispatch()`, which routes the command to every registered hardware device capable of handling that action.
+
+**The mapping is:** AI class label → `infer_action_from_class()` → action string (e.g., `"lock_perimeter"`) → dispatched to all actuators with that capability.
+
+### 5.1 GPIO Relay — Direct Physical Control
+
+**Use case:** Lock/unlock a gate, activate a siren, trigger a floodlight, open/close a valve directly from a Pi GPIO pin.
+
+**Hardware wiring:**
+1. Connect a 5V relay module to a Raspberry Pi GPIO pin (e.g., GPIO 17 = physical pin 11).
+2. Wire your load (siren, lock solenoid, pump relay) to the relay's NO (Normally Open) terminal.
+
+**Linux GPIO setup:**
+
+Before the first run, export the pin to the sysfs interface:
+```bash
+echo "17" | sudo tee /sys/class/gpio/export
+echo "out" | sudo tee /sys/class/gpio/gpio17/direction
+```
+
+To make this persistent on boot, add it to `/etc/rc.local`:
+```bash
+echo "17" > /sys/class/gpio/export
+echo "out" > /sys/class/gpio/gpio17/direction
+```
+
+**`edge-dev.toml` configuration:**
+
+```toml
+[[actuators]]
+id            = "perimeter_relay_north"
+actuator_type = "gpio"
+capabilities  = ["lock_perimeter", "alert"]
+gpio_pin      = 17
+
+[[actuators]]
+id            = "alarm_siren"
+actuator_type = "gpio"
+capabilities  = ["alert", "maintenance_alert"]
+gpio_pin      = 27
+```
+
+**What happens:** When the AI detects an `armed_intruder` in `tactical` domain, `infer_action_from_class()` returns `"lock_perimeter"`. The `ActuatorBus` finds `perimeter_relay_north` (which has `"lock_perimeter"` in its capabilities) and writes `1` to `/sys/class/gpio/gpio17/value`, energising the relay.
+
+---
+
+### 5.2 UART Serial Device — Microcontroller Effectors
+
+**Use case:** Control an Arduino, ESP32, or any custom MCU that drives irrigation valves, motorised locks, conveyor stops, or other industrial effectors over a serial connection.
+
+**Hardware wiring:**
+1. Connect Arduino TX→RPi RX and RX→TX (cross-wired), GND→GND.
+2. Do **not** connect 5V unless the Pi's UART is 5V tolerant (it isn't — use a level shifter).
+3. Plug in via USB-UART adapter instead (shows up as `/dev/ttyUSB0`).
+
+**Arduino firmware (example):**
+
+```cpp
+// Arduino sketch — listens for Caesar commands over Serial
+void setup() { Serial.begin(9600); }
+
+void loop() {
+  if (Serial.available()) {
+    String cmd = Serial.readStringUntil('\n');  // Format: "ACTION:TARGET:INTENSITY\n"
+    cmd.trim();
+    if (cmd.startsWith("INCREASE_FLOW")) {
+      openValve();
+    } else if (cmd.startsWith("STOP_FLOW")) {
+      closeValve();
+    } else if (cmd.startsWith("ALERT")) {
+      activateIndicator();
+    }
+  }
+}
+```
+
+**Find your serial port:**
+```bash
+ls /dev/ttyUSB* /dev/ttyACM*
+# Typically: /dev/ttyUSB0 (USB-UART) or /dev/ttyACM0 (Arduino native USB)
+```
+
+**Grant permission:**
+```bash
+sudo usermod -aG dialout $USER
+# Log out and back in for this to take effect
+```
+
+**`edge-dev.toml` configuration:**
+
+```toml
+[[actuators]]
+id            = "irrigation_zone_3"
+actuator_type = "serial"
+capabilities  = ["increase_flow", "decrease_flow", "stop_flow", "activate_irrigation"]
+serial_port   = "/dev/ttyUSB0"
+baud_rate     = 9600
+
+[[actuators]]
+id            = "industrial_shutoff_zone_a"
+actuator_type = "serial"
+capabilities  = ["shutdown_zone", "maintenance_alert"]
+serial_port   = "/dev/ttyACM0"
+baud_rate     = 115200
+```
+
+**What happens:** When the AI detects `dry_soil` in `agricultural` domain, the action becomes `"increase_flow"`. The `SerialActuator` opens `/dev/ttyUSB0` and sends `INCREASE_FLOW:auto:0.85\n` to the Arduino, which opens the irrigation valve.
+
+---
+
+### 5.3 MQTT Broker — Smart Devices & IoT Peripherals
+
+**Use case:** Control any MQTT-capable device — smart relays, ESPHome nodes, Zigbee bridges (via Mosquitto), industrial PLCs with MQTT adapters, or Home Assistant automations.
+
+**Install and start Mosquitto (MQTT broker):**
+```bash
+sudo apt install -y mosquitto mosquitto-clients
+sudo systemctl enable mosquitto
+sudo systemctl start mosquitto
+
+# Verify it's running:
+sudo systemctl status mosquitto
+```
+
+**Test the broker:**
+```bash
+# Terminal 1 — subscribe
+mosquitto_sub -h localhost -t "caesar/actions" -v
+
+# Terminal 2 — publish a test
+mosquitto_pub -h localhost -t "caesar/actions" -m '{"action":"alert","target":"auto"}'
+```
+
+**Wire an ESPHome device to subscribe to Caesar commands:**
+
+```yaml
+# ESPHome config snippet
+mqtt:
+  broker: 192.168.1.100   # IP of your Linux MQTT broker
+  on_message:
+    - topic: caesar/actions
+      then:
+        - lambda: |-
+            auto doc = cJSON_Parse(x.c_str());
+            std::string action = cJSON_GetObjectItem(doc, "action")->valuestring;
+            if (action == "lock_perimeter") {
+              id(gate_relay).turn_on();
+            } else if (action == "alert") {
+              id(siren_relay).turn_on();
+              delay(5000);
+              id(siren_relay).turn_off();
+            }
+```
+
+**`edge-dev.toml` configuration:**
+
+```toml
+[[actuators]]
+id            = "mqtt_command_bus"
+actuator_type = "mqtt"
+capabilities  = ["alert", "lock_perimeter", "maintenance_alert", "shutdown_zone"]
+mqtt_topic    = "caesar/actions"
+mqtt_broker   = "localhost:1883"
+
+# For a remote broker (e.g., a central MQTT server):
+# mqtt_broker = "192.168.1.100:1883"
+```
+
+**JSON payload sent to MQTT on each dispatch:**
+```json
+{
+  "action": "lock_perimeter",
+  "target": "auto",
+  "intensity": 0.94,
+  "confidence": 0.91,
+  "domain": "tactical",
+  "rationale": "[caesar.tactical] AI detected 'armed_intruder' via onnx over 8 snapshots."
+}
+```
+
+Any device subscribed to `caesar/actions` can parse this JSON and respond accordingly.
+
+---
+
+## 6. Connecting a Camera
+
+### USB Webcam
+
+Plug in the webcam and check it's available:
+```bash
+ls /dev/video*          # Should see /dev/video0
+v4l2-ctl --list-devices # Full device list
+```
+
+Set in `edge-dev.toml`:
+```toml
+[sentinel]
+enabled   = true
+device_id = 0    # Corresponds to /dev/video0
+```
+
+### Raspberry Pi CSI Camera
+
+Enable in raspi-config:
+```bash
+sudo raspi-config
+# → Interface Options → Camera → Enable
+sudo reboot
+```
+
+Then test:
+```bash
+raspistill -o test.jpg
+```
+
+The CSI camera on RPi appears as `/dev/video0` under the libcamera stack. Set `device_id = 0`.
+
+---
+
+## 7. Launching the Dashboard Console
+
+```bash
+pip3 install fastapi uvicorn sse-starlette httpx
+cd project-caesar
+python3 services/caesar_console/server.py
+```
+
+Access the dashboard at: `http://<linux-machine-ip>:8090`
+
+The **PIP (Picture-in-Picture)** live camera feed in the bottom-left of the map automatically switches to whichever node is reporting the most recent `high-interest` threat. Clicking any node marker on the map shows a **[ FOCUS LIVE FEED ]** button to manually pin the PIP to that node for 30 seconds.
+
+---
+
+## 8. Running as Systemd Services
+
+### Hub Service
+
+```bash
+sudo nano /etc/systemd/system/caesar-hub.service
+```
+```ini
+[Unit]
+Description=Project Caesar Regional Hub
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/project-caesar
+ExecStart=/opt/project-caesar/target/release/caesar-hub serve --config configs/hub-dev.toml
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### Edge Node Service
+
+```bash
+sudo nano /etc/systemd/system/uriel-edge.service
+```
+```ini
+[Unit]
+Description=Uriel Edge Node (Project Caesar)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/project-caesar
+ExecStart=/opt/project-caesar/target/release/uriel-edge-node --config configs/edge-dev.toml
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable caesar-hub uriel-edge
+sudo systemctl start caesar-hub uriel-edge
+sudo systemctl status caesar-hub uriel-edge
+```
+
+---
+
+## 9. How AI Detections Trigger Physical Actions
+
+This is the complete pipeline from detection to device action:
+
+```
+Camera Frame (24fps)
+    │
+    ▼  OpenCV MOG2 Background Subtraction
+Anomaly Score > threshold?  (e.g., 0.30)
+    │  YES — 6 consecutive frames
+    ▼
+TemporalAccumulator (ring buffer, 8 snapshots)
+    │  Mean confidence ≥ 0.87? OR burst score > 0.70?
+    ▼
+AI Inference Cascade:
+    1. YOLO-World ONNX (zero-shot object detection)
+    2. Ollama LLaVA VLM (visual reasoning fallback)
+    3. Heuristic (domain-pattern fallback)
+    │
+    ▼  Class label produced, e.g. "armed_intruder"
+infer_action_from_class("armed_intruder", "tactical")
+    │  → "lock_perimeter"
+    ▼
+ActuatorBus::dispatch("lock_perimeter")
+    │
+    ├─▶  GpioActuator  → writes "1" to /sys/class/gpio/gpio17/value  (relay ON)
+    ├─▶  MqttActuator  → publishes JSON to caesar/actions
+    ├─▶  SerialActuator → sends "LOCK_PERIMETER:auto:0.94\n" over UART
+    └─▶  LogActuator   → always writes structured audit log
+
+Dashboard PIP Camera  → automatically switches to the alerting node's live MJPEG stream
+```
+
+### Domain → Action Mapping Reference
+
+| Domain | AI Detects | Action Dispatched |
+|---|---|---|
+| `tactical` | `armed_intruder`, `drone`, `uav` | `lock_perimeter` |
+| `tactical` | anything else | `alert` |
+| `agricultural` | `dry_soil`, `crop_wilt`, `plant_stress` | `increase_flow` |
+| `agricultural` | `flood`, `saturated`, `overwater` | `decrease_flow` |
+| `agricultural` | `pest`, `disease` | `alert` |
+| `industrial` | `overheat`, `fire`, `smoke` | `maintenance_alert` |
+| `industrial` | `leak`, `spill`, `rupture` | `shutdown_zone` |
+| `general` | anything | `alert` |
+
+To add new action mappings, edit `infer_action_from_class()` in `crates/uriel-edge-node/src/actuator.rs` and add the corresponding capability to the relevant actuator entry in `edge-dev.toml`.

@@ -7,6 +7,32 @@ pub enum Modality {
     Thermal,
     Radar,
     Manual,
+    /// OpenCV sentinel-sourced observation — promoted from visual diff to AI classification.
+    Sentinel,
+}
+
+/// Rich dashboard telemetry event emitted by the sentinel pipeline.
+/// Carries the full context chain: detection → portrait → AI verdict → actuator result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SentinelAlert {
+    pub node_id: String,
+    pub timestamp_ms: u64,
+    /// Project Caesar domain: "agricultural" | "industrial" | "tactical" | "general"
+    pub domain: String,
+    /// Number of confirmed-change snapshots accumulated before this alert.
+    pub snapshot_count: usize,
+    /// Mean anomaly confidence across accumulated snapshots (0.0–1.0).
+    pub mean_confidence: f32,
+    /// AI-derived class label (from YOLO-World / Ollama / heuristic).
+    pub class_label: Option<String>,
+    /// Base64-encoded 2×2 composite JPEG of the 4 most significant change regions.
+    pub portrait_jpeg_b64: Option<String>,
+    /// Human-readable reasoning chain for dashboard display.
+    pub rationale: String,
+    /// Actuator actions dispatched autonomously (empty if confidence gate not met).
+    pub actuator_results: Vec<String>,
+    /// Which inference stage produced the class label: "onnx" | "ollama" | "heuristic" | "none"
+    pub inference_stage: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
