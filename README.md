@@ -596,3 +596,21 @@ cargo test -p uriel-caesar-core
 ## License
 
 Private — Project Caesar / Uriel Edge OS. All rights reserved.
+
+---
+
+## Placeholder & Simulated Data Documentation
+
+Project Caesar includes built-in fallback mechanisms to ensure the system can be developed and demonstrated even when physical hardware is not present. These simulated data streams are explicitly logged and only activate as a last resort.
+
+**1. Dashboard Simulation (`ceasar-api.js`)**
+If the Edge nodes are not actively publishing data or the backend server goes offline, the frontend will automatically switch to a simulation loop. This keeps the maps, heatmaps, and trackers populated. A `console.warn` is explicitly emitted in the browser devtools when this occurs.
+
+**2. Camera Fallback (`server.py`)**
+If OpenCV cannot bind to a physical webcam on device 0, the Python backend (`_synthetic_jpeg`) will generate a static "NO SIGNAL - CAMERA OFFLINE" fallback image. This ensures that the frontend camera feed gracefully degrades rather than failing silently or presenting a fake, animated UI.
+
+**3. Sensor Mocking (`hal.rs`)**
+The Hardware Abstraction Layer includes explicit `Simulated*` structs (e.g., `SimulatedThermalSensor`) designed for local development. Physical implementations like `PhysicalAcousticSensor` attempt to use native OS audio APIs (`cpal`), but will safely log a warning and return default/fallback buffers if the hardware initialization fails.
+
+**4. Inference Stubs (`inference.rs`)**
+To ensure the Rust edge node compiles and runs without needing a heavy multi-gigabyte text encoder, `encode_vocabulary` attempts to call a local Ollama embedding endpoint (`nomic-embed-text`). If Ollama is unavailable, a deterministic hashing scheme is used to populate the embedding tensor, accompanied by a warning log.

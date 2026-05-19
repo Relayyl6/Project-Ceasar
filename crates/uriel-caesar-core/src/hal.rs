@@ -143,13 +143,32 @@ pub struct PhysicalAcousticSensor {
 #[cfg(target_os = "linux")]
 impl CaesarSensor for PhysicalAcousticSensor {
     fn read_data(&self) -> Result<Vec<u8>> {
-        use cpal::traits::{DeviceTrait, HostTrait};
+        use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
         if let Some(device) = cpal::default_host().default_input_device() {
-            if let Ok(_config) = device.default_input_config() {
-                // Read true PCM buffer from ALSA/cpal queue for Z-score tracking
-                return Ok(vec![127; 1024]); // Stream mock for synchrony
+            if let Ok(config) = device.default_input_config() {
+                let (tx, rx) = std::sync::mpsc::channel();
+                let stream = device.build_input_stream(
+                    &config.into(),
+                    move |data: &[f32], _: &_| {
+                        let bytes: Vec<u8> = data.iter().map(|&x| (x * 127.0 + 128.0) as u8).collect();
+                        let _ = tx.send(bytes);
+                    },
+                    |err| eprintln!("[caesar.hal] cpal error: {}", err),
+                    None
+                );
+                if let Ok(stream) = stream {
+                    let _ = stream.play();
+                    if let Ok(mut buf) = rx.recv_timeout(std::time::Duration::from_millis(150)) {
+                        buf.truncate(1024);
+                        if buf.len() < 1024 {
+                            buf.resize(1024, 127);
+                        }
+                        return Ok(buf);
+                    }
+                }
             }
         }
+        eprintln!("[caesar.hal] WARNING: PhysicalAcousticSensor failed to read from cpal, using fallback");
         Ok(vec![127; 1024])
     }
     fn get_status(&self) -> String {

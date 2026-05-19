@@ -18,10 +18,34 @@ use ort::{GraphOptimizationLevel, Session};
 use std::time::Instant;
 
 // --- Advanced Physical Hardware Tensor Integration ---
-pub fn encode_vocabulary(_vocab: &[String]) -> ort::Value {
-    // In reality, this runs a CLIP text encoder.
-    let dummy = Array::zeros((1, 512));
-    ort::Value::from_array(dummy).unwrap()
+pub fn encode_vocabulary(vocab: &[String]) -> ort::Value {
+    let endpoint = "http://localhost:11434/api/embeddings";
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .unwrap_or_else(|_| reqwest::blocking::Client::new());
+    
+    let prompt = vocab.join(", ");
+    let mut embed_data = vec![0.0f32; 512];
+    
+    if let Ok(resp) = client.post(endpoint).json(&serde_json::json!({ "model": "nomic-embed-text", "prompt": prompt })).send() {
+        if let Ok(json) = resp.json::<serde_json::Value>() {
+            if let Some(arr) = json["embedding"].as_array() {
+                for (i, val) in arr.iter().take(512).enumerate() {
+                    embed_data[i] = val.as_f64().unwrap_or(0.0) as f32;
+                }
+            }
+        }
+    } else {
+        println!("[edge.inference] Warning: Ollama embeddings unavailable. Using deterministic fallback for vocabulary.");
+        // Deterministic hashing fallback instead of zeros
+        for (i, v) in embed_data.iter_mut().enumerate() {
+            *v = ((i + vocab.len()) % 255) as f32 / 255.0;
+        }
+    }
+    
+    let arr = Array::from_shape_vec((1, 512), embed_data).unwrap();
+    ort::Value::from_array(arr).unwrap()
 }
 
 pub fn apply_nms(tensor: ndarray::ArrayViewD<f32>, custom_vocab: &[String]) -> Option<(String, f32, f32, f32)> {
@@ -50,10 +74,20 @@ pub fn get_latest_robot_telemetry(_config: &EdgeConfig) -> Vec<f32> {
 }
 
 pub fn preprocess_multimodal(_frame: &OpticalFrame, _telemetry: Vec<f32>, _config: &EdgeConfig) -> ort::Value {
-    // Integrates visual data + hardware I2C radar/lidar matrices
-    // When rppal is available on Linux, real i2c_bus is read from _config
-    let dummy = Array::zeros((1, 3, 224, 224));
-    ort::Value::from_array(dummy).unwrap()
+    // Decode the JPEG frame directly to the 224x224 tensor required for Gemini-ER
+    let img = image::load_from_memory(&_frame.jpeg_bytes)
+        .unwrap_or_else(|_| image::DynamicImage::new_rgb8(224, 224))
+        .resize_exact(224, 224, image::imageops::FilterType::Triangle)
+        .to_rgb8();
+        
+    let mut image_array: Array4<f32> = Array::zeros((1, 3, 224, 224));
+    for (x, y, pixel) in img.enumerate_pixels() {
+        image_array[[0, 0, y as usize, x as usize]] = pixel[0] as f32 / 255.0;
+        image_array[[0, 1, y as usize, x as usize]] = pixel[1] as f32 / 255.0;
+        image_array[[0, 2, y as usize, x as usize]] = pixel[2] as f32 / 255.0;
+    }
+    
+    ort::Value::from_array(image_array).unwrap()
 }
 
 pub fn decode_gemini_er_output(_outputs: Vec<ort::Value>) -> String {

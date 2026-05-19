@@ -52,35 +52,33 @@ def _init_camera():
 
 def _synthetic_jpeg(width=640, height=480, label="URIEL OPTICAL FEED"):
     """
-    Build a minimal valid JPEG from scratch using raw DCT/JFIF bytes.
-    Returns bytes of a grey-gradient image with a timestamp overlay.
-    We use the Python `struct` module only — no Pillow/cv2 required.
-    Since building a full JPEG encoder is non-trivial, we use a tiny
-    single-color JFIF placeholder and annotate via metadata only.
+    Returns bytes of a static NO SIGNAL image.
+    This serves as an explicit fallback when the camera is offline.
     """
     try:
         from PIL import Image, ImageDraw, ImageFont
         import io, datetime
-        img = Image.new("RGB", (width, height), color=(7, 12, 16))
+        img = Image.new("RGB", (width, height), color=(10, 10, 10))
         draw = ImageDraw.Draw(img)
         # Scanlines
         for y in range(0, height, 4):
-            draw.line([(0, y), (width, y)], fill=(0, 20, 30, 30))
-        # Crosshair
+            draw.line([(0, y), (width, y)], fill=(20, 20, 20))
+        
+        # Big NO SIGNAL text
         cx, cy = width // 2, height // 2
-        draw.ellipse([cx-30, cy-30, cx+30, cy+30], outline=(0, 255, 136), width=1)
-        draw.line([(cx-45, cy), (cx+45, cy)], fill=(0, 255, 136), width=1)
-        draw.line([(cx, cy-45), (cx, cy+45)], fill=(0, 255, 136), width=1)
+        draw.text((cx - 40, cy - 10), "NO SIGNAL", fill=(255, 51, 68))
+        draw.text((cx - 65, cy + 10), "CAMERA OFFLINE / DISCONNECTED", fill=(180, 40, 50))
+        
         # Timestamp and label
-        ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:12]
-        draw.text((10, 10), f"URIEL-NODE / {label}", fill=(0, 212, 255))
-        draw.text((10, 28), f"UTC {ts}", fill=(0, 212, 255))
-        draw.text((10, height - 24), "ONNX INFERENCE: ACTIVE", fill=(0, 255, 136))
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        draw.text((10, 10), f"URIEL-NODE / {label} (OFFLINE)", fill=(255, 51, 68))
+        draw.text((10, 28), f"UTC {ts}", fill=(255, 51, 68))
+        
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=75)
         return buf.getvalue()
     except ImportError:
-        # Absolute fallback: minimal 1x1 black JPEG
+        # Minimal 1x1 black JPEG fallback if PIL is missing
         return bytes([
             0xFF,0xD8,0xFF,0xE0,0x00,0x10,0x4A,0x46,0x49,0x46,0x00,0x01,
             0x01,0x00,0x00,0x01,0x00,0x01,0x00,0x00,0xFF,0xDB,0x00,0x43,
@@ -111,6 +109,7 @@ def _synthetic_jpeg(width=640, height=480, label="URIEL OPTICAL FEED"):
             0xF6,0xF7,0xF8,0xF9,0xFA,0xFF,0xDA,0x00,0x08,0x01,0x01,0x00,
             0x00,0x3F,0x00,0xFB,0xD6,0xFF,0xD9,
         ])
+
 
 def _grab_frame(node_id="local"):
     """Return JPEG bytes from real camera or synthetic frame."""

@@ -251,6 +251,10 @@
 
   // ── SIMULATION ADVANCE ─────────────────────────────────────────────────────
   function advanceSim() {
+    if (!state.simWarned) {
+      console.warn("[caesar-api] ⚠ WARNING: Hardware connection absent or incomplete. Using fallback SIMULATION data to populate the dashboard.");
+      state.simWarned = true;
+    }
     const s = state.sim;
     s.trackCount   = drift(s.trackCount,   3,    40,  220);
     s.throughput   = drift(s.throughput,   0.08, 0.3, 3.5);
@@ -374,6 +378,7 @@
     state.online = true;
     state.consecutiveFailures = 0;
     state.lastSuccessMs = Date.now();
+    state.simWarned = false;
 
     if (wasOffline) emit("caesar:online", { lastSuccessMs: state.lastSuccessMs });
 
@@ -416,6 +421,7 @@
         if (data.latest) { state.latest = data.latest; emit("caesar:latest", data.latest); }
         if (!state.online) { state.online = true; state.consecutiveFailures = 0; emit("caesar:online", {}); }
         state.lastSuccessMs = Date.now();
+    state.simWarned = false;
         emit("caesar:tick", { online: true, lastSyncMs: state.lastSuccessMs, stale: false, state: { ...state.sim } });
       } catch (_) {}
     };
