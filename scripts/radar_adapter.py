@@ -46,8 +46,8 @@ def read_ld2450_hardware(port: str, baud: int) -> list[dict]:
                 if dist == 0:
                     continue   # empty target slot
                 range_m     = dist / 1000.0
-                azimuth_deg = math.degrees(math.atan2(x, y)) if y != 0 else 0.0
-                velocity    = abs(speed) / 100.0
+                azimuth_deg = math.degrees(math.atan2(x, y))
+                velocity    = speed / 100.0
                 points.append({
                     "range_m": round(range_m, 3),
                     "azimuth_deg": round(azimuth_deg, 2),
@@ -82,7 +82,15 @@ def main() -> int:
     elif args.mode == "json":
         if not args.input:
             raise SystemExit("--input required for mode=json")
-        points = json.loads(open(args.input).read())["points"]
+        try:
+            with open(args.input, encoding="utf-8") as f:
+                points = json.loads(f.read())["points"]
+        except FileNotFoundError:
+            raise SystemExit(f"Input file not found: {args.input}")
+        except json.JSONDecodeError as e:
+            raise SystemExit(f"Invalid JSON in file {args.input}: {e}")
+        except KeyError:
+            raise SystemExit(f"Missing 'points' key in JSON file: {args.input}")
     else:
         raise SystemExit(f"Unknown mode: {args.mode}")
 

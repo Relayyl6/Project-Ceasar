@@ -3,6 +3,12 @@ set -euo pipefail
 
 REPO_DIR="${1:-/opt/uriel-caesar}"
 
+# Fail fast if the repository directory does not exist.
+if [[ ! -d "$REPO_DIR" ]]; then
+  echo "[bootstrap-edge] ERROR: REPO_DIR '$REPO_DIR' does not exist. Clone the repo first." >&2
+  exit 1
+fi
+
 echo "[bootstrap-edge] Updating apt cache"
 sudo apt-get update
 
@@ -11,6 +17,11 @@ sudo apt-get install -y \
   build-essential \
   pkg-config \
   libssl-dev \
+  libclang-dev \
+  libopencv-dev \
+  libpcap-dev \
+  mosquitto \
+  mosquitto-clients \
   python3 \
   python3-pip \
   python3-venv \
@@ -20,6 +31,9 @@ sudo apt-get install -y \
   python3-smbus \
   i2c-tools \
   rpicam-apps
+
+echo "[bootstrap-edge] Enabling and starting mosquitto MQTT broker"
+sudo systemctl enable --now mosquitto
 
 if ! command -v rustup > /dev/null 2>&1; then
   echo "[bootstrap-edge] Installing Rust via rustup"
@@ -33,8 +47,6 @@ python3 -m venv "$REPO_DIR/.venv-edge"
 source "$REPO_DIR/.venv-edge/bin/activate"
 python -m pip install --upgrade pip
 python -m pip install -r "$REPO_DIR/requirements-edge.txt"
-# Sensor hardware libraries (Pi-specific)
-python -m pip install pyserial smbus2 pynacl
 
 echo ""
 echo "[bootstrap-edge] === Pi 3 Edge Node Setup Complete ==="

@@ -3,7 +3,7 @@ publish_topic = "caesar_tactical_intel"
 loop_count = 0
 fusion_window_ms = 700
 threat_threshold = 0.75
-ed25519_seed_hex = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+key_file = "/etc/caesar/tower-bwari-pi.key"
 recon_enabled = true
 
 [location]

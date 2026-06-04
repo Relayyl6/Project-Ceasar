@@ -7,7 +7,7 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use crate::protocol::{FusedTrack, SignedEnvelope};
 use snow::{Builder, HandshakeState};
 
-static NOISE_PATTERN: &'static str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
+static NOISE_PATTERN: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
 
 pub struct NoiseSession {
     pub state: HandshakeState,
@@ -15,6 +15,9 @@ pub struct NoiseSession {
 
 impl NoiseSession {
     pub fn new_initiator(local_private: &[u8], remote_public: &[u8]) -> Result<Self> {
+        if local_private.len() != 32 || remote_public.len() != 32 {
+            anyhow::bail!("Noise keys must be exactly 32 bytes");
+        }
         let builder = Builder::new(NOISE_PATTERN.parse()?);
         let state = builder
             .local_private_key(local_private)
@@ -142,17 +145,19 @@ impl NodeIdentity {
             })?;
         }
 
-        // 64 hex chars + newline
-        std::fs::write(path, format!("{}\n", hex::encode(seed)))
-            .context("failed to write seed to key file")?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
 
-        // Owner-read-only on Unix — prevents other users from reading the seed.
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-                .context("failed to restrict key file permissions to 0600")?;
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
         }
+
+        let mut file = options.open(path).context("failed to open key file for writing")?;
+        use std::io::Write;
+        writeln!(file, "{}", hex::encode(seed))
+            .context("failed to write seed to key file")?;
 
         println!(
             "[caesar.identity] New identity key written to '{}'.\n\
@@ -183,7 +188,7 @@ impl EnvelopeSigner {
     /// Prefer `NodeIdentity::load_or_generate` in application code;
     /// this is kept for tests and external tooling.
     pub fn from_seed_hex(seed_hex: &str) -> Result<Self> {
-        let seed = hex::decode(seed_hex).context("invalid ed25519 seed hex")?;
+        let seed = hex::decode(seed_hex.trim()).context("invalid ed25519 seed hex")?;
         let seed: [u8; 32] = seed
             .try_into()
             .map_err(|_| anyhow::anyhow!("ed25519 seed must be 32 bytes"))?;
@@ -201,7 +206,26 @@ impl EnvelopeSigner {
         topic: &str,
         body: FusedTrack,
     ) -> Result<SignedEnvelope> {
-        let body_bytes = serde_json::to_vec(&body)?;
+        if node_id != body.node_id {
+            anyhow::bail!("node_id mismatch between envelope and body");
+        }
+
+        #[derive(serde::Serialize)]
+        struct EnvelopePayload<'a> {
+            schema_version: u8,
+            node_id: &'a str,
+            topic: &'a str,
+            body: &'a FusedTrack,
+        }
+
+        let payload = EnvelopePayload {
+            schema_version: 1,
+            node_id,
+            topic,
+            body: &body,
+        };
+
+        let body_bytes = serde_json::to_vec(&payload)?;
         let signature = self.signing_key.sign(&body_bytes);
 
         Ok(SignedEnvelope {
@@ -216,6 +240,35 @@ impl EnvelopeSigner {
 }
 
 pub fn verify_envelope(envelope: &SignedEnvelope) -> Result<()> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_millis() as u64;
+
+    if envelope.body.timestamp_ms > now + 60_000 {
+        anyhow::bail!("Envelope from the future");
+    }
+    if now.saturating_sub(envelope.body.timestamp_ms) > 300_000 {
+        anyhow::bail!("Envelope too old (replay protection)");
+    }
+    if envelope.schema_version != 1 {
+        anyhow::bail!("unsupported schema version: {}", envelope.schema_version);
+    }
+    if envelope.node_id != envelope.body.node_id {
+        anyhow::bail!("node_id mismatch between envelope and body");
+    }
+    if !crate::protocol::is_valid_threat_level(&envelope.body.threat_level) {
+        anyhow::bail!("invalid threat_level: {}", envelope.body.threat_level);
+    }
+    if envelope.body.geo_latitude < -90.0 || envelope.body.geo_latitude > 90.0 {
+        anyhow::bail!("invalid geo_latitude: {}", envelope.body.geo_latitude);
+    }
+    if envelope.body.geo_longitude < -180.0 || envelope.body.geo_longitude > 180.0 {
+        anyhow::bail!("invalid geo_longitude: {}", envelope.body.geo_longitude);
+    }
+    if envelope.body.confidence < 0.0 || envelope.body.confidence > 1.0 {
+        anyhow::bail!("invalid confidence: {}", envelope.body.confidence);
+    }
+
     let public_key = hex::decode(&envelope.public_key).context("invalid public key hex")?;
     let public_key: [u8; 32] = public_key
         .try_into()
@@ -229,7 +282,23 @@ pub fn verify_envelope(envelope: &SignedEnvelope) -> Result<()> {
         .try_into()
         .map_err(|_| anyhow::anyhow!("signature must be 64 bytes"))?;
     let signature = Signature::from_bytes(&signature);
-    let body_bytes = serde_json::to_vec(&envelope.body)?;
+    
+    #[derive(serde::Serialize)]
+    struct EnvelopePayload<'a> {
+        schema_version: u8,
+        node_id: &'a str,
+        topic: &'a str,
+        body: &'a FusedTrack,
+    }
+
+    let payload = EnvelopePayload {
+        schema_version: envelope.schema_version,
+        node_id: &envelope.node_id,
+        topic: &envelope.topic,
+        body: &envelope.body,
+    };
+    
+    let body_bytes = serde_json::to_vec(&payload)?;
     verifying_key.verify(&body_bytes, &signature)?;
     Ok(())
 }
@@ -240,9 +309,13 @@ mod tests {
     use crate::protocol::Modality;
 
     fn test_track() -> FusedTrack {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
         FusedTrack {
             node_id: "node-a".into(),
-            timestamp_ms: 1,
+            timestamp_ms: now,
             track_id: "track-1".into(),
             site: "lab".into(),
             geo_latitude: 1.0,
@@ -320,7 +393,7 @@ mod tests {
         // Public key must match what from_seed_hex produces
         let expected_signer = EnvelopeSigner::from_seed_hex(legacy).unwrap();
         let expected_pk = expected_signer
-            .sign_track("x", "y", test_track())
+            .sign_track("node-a", "y", test_track())
             .unwrap()
             .public_key;
         assert_eq!(id.public_key_hex, expected_pk);

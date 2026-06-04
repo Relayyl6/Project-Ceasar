@@ -4,6 +4,7 @@ use serde::Deserialize;
 pub struct EdgeConfig {
     pub node_id: String,
     pub publish_topic: String,
+    #[serde(default)]
     pub loop_count: usize,
     pub fusion_window_ms: u64,
     pub threat_threshold: f32,
@@ -23,6 +24,11 @@ pub struct EdgeConfig {
     pub domain: String,
     #[serde(default = "default_recon_enabled")]
     pub recon_enabled: bool,
+    /// Optional WiFi interface to use for 802.11 monitor-mode PCAP.
+    /// Defaults to "wlan0" in code if not set.
+    /// Example: "/dev/wlan1" for a dedicated monitor-mode USB adapter.
+    #[serde(default)]
+    pub recon_interface: Option<String>,
     pub location: Location,
     pub uplink: UplinkConfig,
     pub optical: OpticalSourceConfig,
@@ -39,6 +45,29 @@ fn default_recon_enabled() -> bool { true }
 fn default_domain() -> String { "general".to_string() }
 fn default_key_file() -> String { "./node_identity.key".to_string() }
 
+impl EdgeConfig {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.node_id.is_empty() {
+            anyhow::bail!("node_id cannot be empty");
+        }
+        if self.fusion_window_ms == 0 {
+            anyhow::bail!("fusion_window_ms must be > 0 (zero causes interval panics)");
+        }
+        if self.sentinel.enabled {
+            if self.sentinel.fps == 0 {
+                anyhow::bail!("sentinel.fps must be > 0");
+            }
+            if self.sentinel.min_snapshots == 0 {
+                anyhow::bail!("sentinel.min_snapshots must be > 0");
+            }
+            if self.sentinel.motion_area_threshold <= 0.0 {
+                anyhow::bail!("sentinel.motion_area_threshold must be > 0.0");
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Location {
     pub site: String,
@@ -54,6 +83,11 @@ pub struct UplinkConfig {
     pub uart_port: Option<String>,
     pub baud_rate: Option<u32>,
     pub lora_frequency_mhz: Option<f32>,
+    /// F11 FIX: Explicit serial port for gossipsub/RFD900x uplink mode.
+    /// When set, only this specific device is used for radio uplink.
+    /// Example: "/dev/ttyUSB0" or "COM3".
+    /// If absent, gossipsub logs to stdout only (no radio transmission).
+    pub serial_port: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

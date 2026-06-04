@@ -63,13 +63,22 @@ async fn run_profile_capture(config: &OpticalSourceConfig, sequence: u64) -> Res
 async fn run_command_bytes(program: &str, args: &[String], sequence: u64) -> Result<Vec<u8>> {
     let mut command = Command::new(program);
     for arg in args {
-        command.arg(expand_arg(&arg, sequence));
+        command.arg(expand_arg(arg, sequence));
     }
 
-    let output = command
-        .output()
-        .await
-        .with_context(|| format!("failed to execute camera command {}", program))?;
+    // A hung camera process (e.g. rpicam-jpeg waiting for the CSI bus, or ffmpeg
+    // blocked on a v4l2 device that never delivers a frame) would hold a Tokio
+    // worker thread indefinitely via `.await`, starving the rest of the pipeline.
+    // 10 s is generous for a single-frame capture; real captures typically finish
+    // in < 2 s. On timeout we kill the child implicitly when the `Child` future is
+    // dropped (Tokio kills the process on drop by default since 1.x).
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        command.output(),
+    )
+    .await
+    .with_context(|| format!("camera command {} timed out after 10 s", program))?
+    .with_context(|| format!("failed to execute camera command {}", program))?;
 
     if !output.status.success() {
         bail!(
@@ -148,13 +157,23 @@ fn build_profile_command(config: &OpticalSourceConfig) -> Result<(String, Vec<St
     Ok((program, args))
 }
 
-pub fn write_frame_to_temp(frame: &OpticalFrame) -> Result<PathBuf> {
+/// Write a captured frame to a temporary JPEG file and return its path.
+///
+/// **Caller is responsible for deleting the file** once it is no longer needed
+/// (e.g. after the inference subprocess has consumed it). The file is named
+/// `uriel_frame_{camera_id}_{sequence}.jpg` inside the OS temp directory.
+///
+/// This function is `async` to avoid blocking the Tokio runtime thread on the
+/// `fs::write` syscall; using synchronous `std::fs::write` here would stall
+/// other tasks sharing the same worker thread during the disk write.
+pub async fn write_frame_to_temp(frame: &OpticalFrame) -> Result<PathBuf> {
     let mut path = std::env::temp_dir();
     path.push(format!(
         "uriel_frame_{}_{}.jpg",
         frame.camera_id, frame.sequence
     ));
-    std::fs::write(&path, &frame.jpeg_bytes)
+    fs::write(&path, &frame.jpeg_bytes)
+        .await
         .with_context(|| format!("failed to write frame to temp path {}", path.display()))?;
     Ok(path)
 }

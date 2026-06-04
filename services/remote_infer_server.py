@@ -70,13 +70,19 @@ def heuristic_infer(jpeg_bytes: bytes, sequence: int, camera_id: str, timestamp_
     """Pure-math fallback: sample first 256 bytes of JPEG for brightness proxy."""
     sample = sum(jpeg_bytes[:256]) / max(len(jpeg_bytes[:256]), 1)
     confidence = min(0.96, max(0.30, (sample / 255.0) + 0.32))
-    digest = hashlib.blake3(jpeg_bytes).hexdigest() if hasattr(hashlib, "blake3") else hashlib.sha256(jpeg_bytes).hexdigest()
+    # F17 FIX: Python stdlib hashlib does not have blake3. The Rust side uses
+    # blake3 for evidence digests, but falls back to a hex string when blake3
+    # is unavailable. We consistently use SHA-256 here and label the format
+    # so consumers can distinguish it from Rust blake3 digests.
+    digest = "sha256:" + hashlib.sha256(jpeg_bytes).hexdigest()
     return {
         "track_hint": f"heuristic-track-{sequence % 6}",
         "confidence": round(confidence, 4),
-        "class_label": "vehicle",
-        "position_m": [32.0 + (sequence % 14), 11.0 + (sequence % 8)],
-        "velocity_mps": 4.0 + (sequence % 4),
+        # M3 FIX: Return neutral "motion-detected" instead of "vehicle" to avoid
+        # spurious "lock_perimeter" dispatch in tactical mode when Ollama is down.
+        "class_label": "motion-detected",
+        "position_m": [0.0, 0.0],
+        "velocity_mps": None,
         "evidence_digest": digest,
         "inference_stage": "heuristic",
     }
@@ -133,9 +139,9 @@ def ollama_vision_infer(
         "track_hint": f"ollama-track-{sequence % 100}",
         "confidence": round(confidence, 4),
         "class_label": label,
-        "position_m": [20.0 + (sequence % 20), 10.0 + (sequence % 12)],
-        "velocity_mps": 0.0,
-        "evidence_digest": f"ollama-{label_short}-seq{sequence}",
+        "position_m": [0.0, 0.0],  # M2: No real position from VLM text output
+        "velocity_mps": None,
+        "evidence_digest": "sha256:" + hashlib.sha256(jpeg_bytes).hexdigest(),
         "inference_stage": "ollama",
     }
 
@@ -163,7 +169,23 @@ class InferHandler(BaseHTTPRequestHandler):
 
     def _handle_infer(self):
         """Vision inference: accepts JPEG frame, runs Ollama VLM, returns Observation JSON."""
-        length = int(self.headers.get("Content-Length", 0))
+        # F12 FIX: Handle missing Content-Length gracefully — some HTTP clients
+        # (curl --data-binary without explicit header) omit it for small bodies.
+        raw_cl = self.headers.get("Content-Length")
+        try:
+            length = int(raw_cl) if raw_cl is not None else 16 * 1024 * 1024
+        except ValueError:
+            self._send(400, {"error": "invalid Content-Length"})
+            return
+
+        if length < 0:
+            self._send(400, {"error": "negative Content-Length"})
+            return
+
+        if length > 16 * 1024 * 1024:
+            self._send(413, {"error": "payload too large"})
+            return
+
         if length == 0:
             self._send(400, {"error": "empty body"})
             return
@@ -174,16 +196,25 @@ class InferHandler(BaseHTTPRequestHandler):
             self._send(400, {"error": f"JSON parse error: {exc}"})
             return
 
-        jpeg_b64   = body.get("jpeg_b64", "")
-        node_id    = body.get("node_id", "unknown")
-        domain     = body.get("domain", "general")
-        sequence   = int(body.get("sequence", 0))
-        timestamp  = int(body.get("timestamp_ms", int(time.time() * 1000)))
-        camera_id  = body.get("camera_id", "camera")
-
-        if not jpeg_b64:
-            self._send(400, {"error": "jpeg_b64 field is required"})
+        if not isinstance(body, dict):
+            self._send(400, {"error": "JSON body must be an object"})
             return
+
+        jpeg_b64   = body.get("jpeg_b64", "")
+        if not isinstance(jpeg_b64, str) or not jpeg_b64:
+            self._send(400, {"error": "jpeg_b64 field is required and must be a string"})
+            return
+
+        node_id    = str(body.get("node_id", "unknown"))
+        domain     = str(body.get("domain", "general"))
+        try:
+            sequence   = int(body.get("sequence", 0))
+            timestamp  = int(body.get("timestamp_ms", int(time.time() * 1000)))
+        except (ValueError, TypeError):
+            self._send(400, {"error": "sequence and timestamp_ms must be integers"})
+            return
+            
+        camera_id  = str(body.get("camera_id", "camera"))
 
         try:
             jpeg_bytes = base64.b64decode(jpeg_b64)
@@ -217,7 +248,22 @@ class InferHandler(BaseHTTPRequestHandler):
         this proxy forwards those calls to the local Ollama instance
         at localhost:11434, so the Pi 3 only needs one hub address.
         """
-        length = int(self.headers.get("Content-Length", 0))
+        # F12 FIX: Same bounded Content-Length handling
+        raw_cl = self.headers.get("Content-Length")
+        try:
+            length = int(raw_cl) if raw_cl is not None else 16 * 1024 * 1024
+        except ValueError:
+            self._send(400, {"error": "invalid Content-Length"})
+            return
+
+        if length < 0:
+            self._send(400, {"error": "negative Content-Length"})
+            return
+
+        if length > 16 * 1024 * 1024:
+            self._send(413, {"error": "payload too large"})
+            return
+
         if length == 0:
             self._send(400, {"error": "empty body"})
             return

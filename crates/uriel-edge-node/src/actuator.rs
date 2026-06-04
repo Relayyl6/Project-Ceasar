@@ -71,8 +71,10 @@ impl Actuator for LogActuator {
     fn capabilities(&self) -> &[String] { &self.caps }
 
     fn execute(&self, cmd: &ActuatorCommand) -> Result<ActuatorResult> {
-        // Emit domain-prefixed log line readable by the dashboard parser
-        println!(
+        // Emit domain-prefixed log line readable by the dashboard parser.
+        // Using eprintln! so audit lines go to stderr and do not contaminate
+        // the stdout JSON stream when running as a sensor subprocess.
+        eprintln!(
             "[caesar.{domain}][actuator.{id}] ACTION={action} TARGET={target} \
              INTENSITY={intensity:.2} CONFIDENCE={confidence:.2}\n  ↳ {rationale}",
             domain    = cmd.domain,
@@ -117,12 +119,19 @@ impl Actuator for SerialActuator {
         use std::io::Write;
         let payload = format!("{}:{}:{:.2}\n", cmd.action.to_uppercase(), cmd.target, cmd.intensity);
         match serialport::new(&self.port, self.baud)
-            .timeout(std::time::Duration::from_millis(300))
+            // 2-second timeout covers both the OS-level write flush (if the MCU's
+            // UART RX buffer is full) and any subsequent read. 300 ms was too short
+            // for slow MCUs under load and could cause the write to block until the
+            // kernel's internal TTY buffer drained — effectively hanging forever on
+            // some platforms. 2 s matches the actuator dispatch expectation.
+            .timeout(std::time::Duration::from_secs(2))
             .open()
         {
             Ok(mut port) => {
                 port.write_all(payload.as_bytes())?;
-                println!("[caesar.{}.serial] Sent '{}' over {}", cmd.domain, payload.trim(), self.port);
+                // eprintln! so operational messages go to stderr, not the stdout
+                // JSON stream consumed by the inference pipeline.
+                eprintln!("[caesar.{}.serial] Sent '{}' over {}", cmd.domain, payload.trim(), self.port);
                 Ok(ActuatorResult {
                     actuator_id: self.id.clone(),
                     success: true,
@@ -138,6 +147,18 @@ impl Actuator for SerialActuator {
                 })
             }
         }
+    }
+}
+
+/// Encode an MQTT 3.1.1 variable-length integer (remaining_len field).
+/// Supports up to 4 bytes (max payload ~256 MB; well beyond any use here).
+fn encode_remaining_len(buf: &mut Vec<u8>, mut len: usize) {
+    loop {
+        let mut byte = (len & 0x7F) as u8;
+        len >>= 7;
+        if len > 0 { byte |= 0x80; }
+        buf.push(byte);
+        if len == 0 { break; }
     }
 }
 
@@ -170,7 +191,12 @@ impl MqttActuator {
         // Variable header: protocol name (MQTT) + level (4) + flags (0x02=CleanSession) + keepalive (60)
         let var_header: &[u8] = &[0x00, 0x04, b'M', b'Q', b'T', b'T', 0x04, 0x02, 0x00, 0x3C];
         let remaining_len = var_header.len() + payload_len;
-        let mut pkt = vec![0x10u8, remaining_len as u8];
+        let mut pkt = vec![0x10u8];
+        // F1 FIX: CONNECT remaining_len must use MQTT variable-length encoding,
+        // not a raw u8 cast which would truncate for packets >= 128 bytes
+        // (e.g. a 23-char client_id already pushes remaining_len to 35, safe;
+        // but an unusually long id or future fields could exceed 127).
+        encode_remaining_len(&mut pkt, remaining_len);
         pkt.extend_from_slice(var_header);
         pkt.push((client_id_bytes.len() >> 8) as u8);
         pkt.push(client_id_bytes.len() as u8);
@@ -183,13 +209,9 @@ impl MqttActuator {
         let topic_bytes = topic.as_bytes();
         let remaining_len = 2 + topic_bytes.len() + payload.len();
         let mut pkt = vec![0x30u8]; // PUBLISH, QoS=0
-        // Remaining length (variable-length encoding, capped at 2 bytes for practical topic+payload sizes)
-        if remaining_len < 128 {
-            pkt.push(remaining_len as u8);
-        } else {
-            pkt.push(((remaining_len & 0x7F) | 0x80) as u8);
-            pkt.push((remaining_len >> 7) as u8);
-        }
+        // Use the same variable-length encoder as connect_packet so that
+        // large payloads (>127 bytes remaining_len) are encoded correctly.
+        encode_remaining_len(&mut pkt, remaining_len);
         pkt.push((topic_bytes.len() >> 8) as u8);
         pkt.push(topic_bytes.len() as u8);
         pkt.extend_from_slice(topic_bytes);
@@ -203,7 +225,8 @@ impl Actuator for MqttActuator {
     fn capabilities(&self) -> &[String] { &self.caps }
 
     fn execute(&self, cmd: &ActuatorCommand) -> Result<ActuatorResult> {
-        use std::io::Write;
+        use std::io::{Read, Write};
+        use std::net::ToSocketAddrs;
         let payload = serde_json::json!({
             "action":     cmd.action,
             "target":     cmd.target,
@@ -213,16 +236,56 @@ impl Actuator for MqttActuator {
             "rationale":  cmd.rationale,
         }).to_string();
 
-        let client_id = format!("caesar-edge-{}", &self.id[..self.id.len().min(10)]);
+        // F2 FIX: Use char-boundary-safe truncation so multi-byte UTF-8 IDs
+        // don't panic. floor_char_boundary is stable since Rust 1.79.
+        let trunc_len = self.id.floor_char_boundary(self.id.len().min(10));
+        let client_id = format!("caesar-edge-{}", &self.id[..trunc_len]);
         let connect = Self::connect_packet(&client_id);
         let publish = Self::publish_packet(&self.topic, payload.as_bytes());
 
-        match std::net::TcpStream::connect(&self.broker_addr) {
+        // Resolve the address first so we can use connect_timeout, which unlike
+        // TcpStream::connect does not block indefinitely on a non-responding broker
+        // (e.g. a firewall silently dropping the SYN). 2 s matches the overall
+        // actuator dispatch budget.
+        let addr = self.broker_addr
+            .to_socket_addrs()
+            .with_context(|| format!("MQTT: cannot resolve broker address '{}'", self.broker_addr))?
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("MQTT: no addresses for '{}'", self.broker_addr))?;
+
+        match std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(2)) {
             Ok(mut stream) => {
+                // Write timeout: prevents hanging if the broker's TCP recv buffer is full.
                 stream.set_write_timeout(Some(std::time::Duration::from_millis(500)))?;
+                // Read timeout: we read exactly 4 bytes of CONNACK after CONNECT.
+                // Without this the read could block forever if the broker is slow or
+                // sends a partial response.
+                stream.set_read_timeout(Some(std::time::Duration::from_millis(500)))?;
                 stream.write_all(&connect)?;
+                // Read CONNACK (4 bytes: 0x20 0x02 <session_present> <return_code>).
+                // We do a best-effort read; a non-zero return_code is logged but we
+                // still attempt the PUBLISH (QoS-0 brokers often accept anyway).
+                let mut connack = [0u8; 4];
+                match stream.read_exact(&mut connack) {
+                    Ok(_) if connack[0] == 0x20 && connack[3] != 0 => {
+                        eprintln!(
+                            "[caesar.actuator.mqtt] CONNACK refused (rc={}) from {}",
+                            connack[3], self.broker_addr
+                        );
+                    }
+                    Err(e) => {
+                        // Timeout or short read — log and continue; QoS-0 PUBLISH
+                        // may still succeed if the broker is lenient.
+                        eprintln!(
+                            "[caesar.actuator.mqtt] CONNACK read incomplete from {}: {e}",
+                            self.broker_addr
+                        );
+                    }
+                    _ => {}
+                }
                 stream.write_all(&publish)?;
-                println!(
+                // eprintln! keeps operational messages off the stdout JSON stream.
+                eprintln!(
                     "[caesar.{}.mqtt] Published to {}/{} — action='{}'",
                     cmd.domain, self.broker_addr, self.topic, cmd.action
                 );
@@ -329,14 +392,18 @@ impl Actuator for HttpWebhookActuator {
                 stream.set_write_timeout(Some(std::time::Duration::from_millis(2000)))?;
                 stream.set_read_timeout(Some(std::time::Duration::from_millis(2000)))?;
                 stream.write_all(request.as_bytes())?;
-                // Read just the status line to confirm delivery
-                let mut buf = [0u8; 64];
-                let _ = stream.read(&mut buf);
-                let status = String::from_utf8_lossy(&buf);
-                let success = status.contains("200") || status.contains("201") || status.contains("204") || status.contains("No Content");
+                // F3 FIX: Read enough of the response to reliably detect the status code.
+                // 512 bytes is sufficient for any HTTP/1.1 status line + common headers.
+                // The previous 64-byte buffer could miss the status code in padded responses.
+                let mut buf = [0u8; 512];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let status = String::from_utf8_lossy(&buf[..n]);
+                let first_line = status.lines().next().unwrap_or("").trim();
+                let success = first_line.contains(" 200") || first_line.contains(" 201")
+                    || first_line.contains(" 202") || first_line.contains(" 204");
                 println!(
                     "[caesar.{}.webhook] POST {} → action='{}' status_hint='{}'",
-                    cmd.domain, self.url, cmd.action, status.lines().next().unwrap_or("").trim()
+                    cmd.domain, self.url, cmd.action, first_line
                 );
                 Ok(ActuatorResult {
                     actuator_id: self.id.clone(),
@@ -382,8 +449,18 @@ impl Actuator for GpioActuator {
     fn execute(&self, cmd: &ActuatorCommand) -> Result<ActuatorResult> {
         let value = if cmd.intensity > 0.5 { "1" } else { "0" };
         let path = format!("/sys/class/gpio/gpio{}/value", self.pin);
-        std::fs::write(&path, value)?;
-        println!("[caesar.{}.gpio] Pin {} → {} ({})", cmd.domain, self.pin, value, cmd.action);
+        // Provide an actionable error context: the raw OS error (e.g. ENOENT or
+        // EPERM) alone does not tell the operator which pin failed or whether it
+        // was exported. This context string surfaces pin number, sysfs path, and
+        // the action being attempted so the log entry is self-explanatory.
+        std::fs::write(&path, value).with_context(|| format!(
+            "GPIO write failed for pin {} (path: {path}) during action '{}' — \
+             ensure the pin is exported via /sys/class/gpio/export and that the \
+             process has write permission to {path}",
+            self.pin, cmd.action
+        ))?;
+        // eprintln! keeps gpio status messages off the stdout JSON stream.
+        eprintln!("[caesar.{}.gpio] Pin {} → {} ({})", cmd.domain, self.pin, value, cmd.action);
         Ok(ActuatorResult {
             actuator_id: self.id.clone(),
             success: true,
@@ -477,6 +554,15 @@ impl ActuatorBus {
     /// Dispatch a command to every actuator capable of handling `cmd.action`.
     /// The `system_log` actuator always receives the command for audit purposes,
     /// even if no domain-specific actuator is registered for the action.
+    ///
+    /// # Concurrency note
+    /// Actuators are called **sequentially** on the calling thread. A blocking
+    /// actuator (e.g. a `SerialActuator` waiting up to 2 s for UART flush, or an
+    /// `MqttActuator` connecting with a 2 s TCP timeout) will delay every
+    /// subsequent actuator in the chain by the same duration. If low-latency
+    /// dispatch across many actuators becomes a requirement, consider spawning
+    /// each `execute` call onto a thread pool (e.g. `rayon::spawn` or
+    /// `std::thread::scope`) and joining the results.
     pub fn dispatch(&self, cmd: ActuatorCommand) -> Vec<ActuatorResult> {
         let mut results = Vec::new();
         let mut dispatched_to_domain = false;

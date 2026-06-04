@@ -28,6 +28,7 @@ enum Command {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     let settings: HubConfig = read_toml(&cli.config)?;
+    settings.validate()?;
 
     match cli.command.unwrap_or(Command::Serve) {
         Command::Serve => run_server(settings).await,

@@ -237,10 +237,10 @@ fn encode_mat_jpeg(mat: &Mat) -> Result<Vec<u8>> {
 
 /// Wrap an OpenCV Mat as the existing `OpticalFrame` type so it can pass
 /// through the unmodified inference pipeline (YOLO → Ollama → Heuristic).
-fn mat_to_optical_frame(mat: &Mat, config: &EdgeConfig, timestamp_ms: u64) -> Result<OpticalFrame> {
+fn mat_to_optical_frame(mat: &Mat, config: &EdgeConfig, timestamp_ms: u64, sequence: u64) -> Result<OpticalFrame> {
     let jpeg = encode_mat_jpeg(mat)?;
     Ok(OpticalFrame {
-        sequence: timestamp_ms / 42, // approximate 24fps sequence number
+        sequence,
         timestamp_ms,
         camera_id: config.optical.camera_id.clone(),
         width: mat.cols() as u32,
@@ -307,6 +307,7 @@ impl SentinelWorker {
     // MJPEG server — serves a browser-compatible multipart stream
     // -----------------------------------------------------------------------
     fn run_mjpeg_server(addr: &str, jpeg_ref: Arc<Mutex<Vec<u8>>>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
         let listener = match TcpListener::bind(addr) {
             Ok(l) => l,
             Err(e) => {
@@ -314,32 +315,48 @@ impl SentinelWorker {
                 return;
             }
         };
+        // H5 FIX: Cap concurrent MJPEG clients at 4 to prevent OOM on Pi 3.
+        // Each client thread holds a frame clone in its loop; uncapped connections
+        // would exhaust the 1GB RAM on a resource-constrained device.
+        let active = Arc::new(AtomicUsize::new(0));
+        const MAX_CLIENTS: usize = 4;
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue; };
+            if active.load(Ordering::Relaxed) >= MAX_CLIENTS {
+                // Politely close — no HTTP error sent, just drop
+                drop(stream);
+                continue;
+            }
+            active.fetch_add(1, Ordering::Relaxed);
             let jpeg_ref = Arc::clone(&jpeg_ref);
+            let active_clone = Arc::clone(&active);
             std::thread::spawn(move || {
                 // Send HTTP headers
                 let header = "HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=caesar_frame\r\nConnection: keep-alive\r\nCache-Control: no-cache\r\n\r\n";
-                if stream.write_all(header.as_bytes()).is_err() { return; }
-                let target_fps = Duration::from_millis(42); // ~24fps
-                loop {
-                    let jpeg = {
-                        let guard = jpeg_ref.lock().unwrap();
-                        guard.clone()
-                    };
-                    if jpeg.is_empty() {
-                        std::thread::sleep(Duration::from_millis(50));
-                        continue;
+                if stream.write_all(header.as_bytes()).is_ok() {
+                    let target_fps = Duration::from_millis(42); // ~24fps
+                    loop {
+                        let jpeg = {
+                            match jpeg_ref.lock() {
+                                Ok(guard) => guard.clone(),
+                                Err(_) => break,
+                            }
+                        };
+                        if jpeg.is_empty() {
+                            std::thread::sleep(Duration::from_millis(50));
+                            continue;
+                        }
+                        let part_header = format!(
+                            "--caesar_frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
+                            jpeg.len()
+                        );
+                        if stream.write_all(part_header.as_bytes()).is_err() { break; }
+                        if stream.write_all(&jpeg).is_err() { break; }
+                        if stream.write_all(b"\r\n").is_err() { break; }
+                        std::thread::sleep(target_fps);
                     }
-                    let part_header = format!(
-                        "--caesar_frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
-                        jpeg.len()
-                    );
-                    if stream.write_all(part_header.as_bytes()).is_err() { break; }
-                    if stream.write_all(&jpeg).is_err() { break; }
-                    if stream.write_all(b"\r\n").is_err() { break; }
-                    std::thread::sleep(target_fps);
                 }
+                active_clone.fetch_sub(1, Ordering::Relaxed);
             });
         }
     }
@@ -359,9 +376,13 @@ impl SentinelWorker {
         let mut frame   = Mat::default();
         let mut consecutive_change_frames: u8 = 0;
         let mut accumulator = TemporalAccumulator::new(s.min_snapshots);
+        // L8 FIX: Monotonic per-frame sequence counter — not derived from timestamps
+        // which can be non-monotonic under NTP corrections or clock jitter.
+        let mut frame_seq: u64 = 0;
 
         let frame_dur = Duration::from_micros(1_000_000 / s.fps.max(1) as u64);
         let mut last_tick = Instant::now();
+        let mut last_burst = Instant::now() - Duration::from_secs(60);
 
         println!(
             "[caesar.sentinel] Online — device={} fps={} domain={} thresh={}/{}{}",
@@ -383,6 +404,7 @@ impl SentinelWorker {
                 std::thread::sleep(Duration::from_millis(100));
                 continue;
             }
+            frame_seq = frame_seq.wrapping_add(1);
 
             // --- Stage 1: MOG2 background subtraction ---
             mog2.apply(&frame, &mut fg_mask, -1.0)?;
@@ -462,12 +484,13 @@ impl SentinelWorker {
                 );
 
                 // --- Burst escalation: high-score events skip the accumulation wait ---
-                if anomaly_score > s.burst_threshold {
+                if anomaly_score > s.burst_threshold && last_burst.elapsed() > Duration::from_secs(2) {
+                    last_burst = Instant::now();
                     println!(
                         "[caesar.sentinel] Burst escalation: score={:.3} > {:.3} — waking AI now",
                         anomaly_score, s.burst_threshold
                     );
-                    if let Ok(of) = mat_to_optical_frame(&frame, &self.config, timestamp_ms) {
+                    if let Ok(of) = mat_to_optical_frame(&frame, &self.config, timestamp_ms, frame_seq) {
                         let ctx = SentinelContext {
                             anomaly_score,
                             snapshot_count: accumulator.len(),
@@ -502,7 +525,7 @@ impl SentinelWorker {
                             mean_conf, s.autonomous_confidence
                         );
 
-                        if let Ok(of) = mat_to_optical_frame(&frame, &self.config, timestamp_ms) {
+                        if let Ok(of) = mat_to_optical_frame(&frame, &self.config, timestamp_ms, frame_seq) {
                             let ctx = SentinelContext {
                                 anomaly_score: mean_conf,
                                 snapshot_count: accumulator.len(),

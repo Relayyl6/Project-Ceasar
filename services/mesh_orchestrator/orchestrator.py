@@ -25,32 +25,35 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     while True:
-        latest = read_latest(latest_path)
-        alerts = read_jsonl_tail(high_interest_path, 200)
+        try:
+            latest = read_latest(latest_path)
+            alerts = read_jsonl_tail(high_interest_path, 200)
 
-        node_registry = build_node_registry(cluster, latest)
-        regional_summary = build_regional_summary(cluster, latest, alerts)
-        orchestration_plan = build_orchestration_plan(cluster, latest, alerts)
-        learning_plan = build_learning_plan(cluster, latest, alerts)
+            node_registry = build_node_registry(cluster, latest)
+            regional_summary = build_regional_summary(cluster, latest, alerts)
+            orchestration_plan = build_orchestration_plan(cluster, latest, alerts)
+            learning_plan = build_learning_plan(cluster, latest, alerts)
 
-        write_json(output_dir / "node_registry.json", node_registry)
-        write_json(output_dir / "regional_summary.json", regional_summary)
-        write_json(output_dir / "orchestration_plan.json", orchestration_plan)
-        write_json(output_dir / "learning_plan.json", learning_plan)
-        append_jsonl(
-            output_dir / "governance_audit.jsonl",
-            {
-                "timestamp_ms": int(time.time() * 1000),
-                "cluster_id": cluster["cluster_id"],
-                "regional_summary": {
-                    "active_nodes": regional_summary["active_node_count"],
-                    "active_tracks": regional_summary["active_track_count"],
-                    "dominant_threat_level": regional_summary["dominant_threat_level"],
+            write_json(output_dir / "node_registry.json", node_registry)
+            write_json(output_dir / "regional_summary.json", regional_summary)
+            write_json(output_dir / "orchestration_plan.json", orchestration_plan)
+            write_json(output_dir / "learning_plan.json", learning_plan)
+            append_jsonl(
+                output_dir / "governance_audit.jsonl",
+                {
+                    "timestamp_ms": int(time.time() * 1000),
+                    "cluster_id": cluster["cluster_id"],
+                    "regional_summary": {
+                        "active_nodes": regional_summary["active_node_count"],
+                        "active_tracks": regional_summary["active_track_count"],
+                        "dominant_threat_level": regional_summary["dominant_threat_level"],
+                    },
+                    "policy_digest": orchestration_plan["policy_digest"],
+                    "federated_round": learning_plan["federated_round"]["round_id"],
                 },
-                "policy_digest": orchestration_plan["policy_digest"],
-                "federated_round": learning_plan["federated_round"]["round_id"],
-            },
-        )
+            )
+        except Exception as e:
+            print(f"Unhandled exception in orchestrator loop: {e}")
 
         if args.run_once:
             break
@@ -60,16 +63,30 @@ def main() -> int:
 
 
 def read_latest(path: Path) -> dict:
-    if not path.exists():
+    try:
+        if not path.exists():
+            return {}
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"Error reading latest: {e}")
         return {}
-    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def read_jsonl_tail(path: Path, limit: int) -> list[dict]:
-    if not path.exists():
+    try:
+        if not path.exists():
+            return []
+        lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        result = []
+        for line in lines[-limit:]:
+            try:
+                result.append(json.loads(line))
+            except Exception:
+                pass
+        return result
+    except Exception as e:
+        print(f"Error reading jsonl tail: {e}")
         return []
-    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    return [json.loads(line) for line in lines[-limit:]]
 
 
 def build_node_registry(cluster: dict, latest: dict) -> dict:
@@ -100,11 +117,13 @@ def build_regional_summary(cluster: dict, latest: dict, alerts: list[dict]) -> d
     site_counts = Counter()
 
     for record in latest_records:
+        if "envelope" not in record or "body" not in record["envelope"]:
+            continue
         body = record["envelope"]["body"]
-        threat_counts[body["threat_level"]] += 1
-        node_counts[body["node_id"]] += 1
-        site_counts[body["site"]] += 1
-        for modality in body["contributing_modalities"]:
+        threat_counts[body.get("threat_level", "unknown")] += 1
+        node_counts[body.get("node_id", "unknown")] += 1
+        site_counts[body.get("site", "unknown")] += 1
+        for modality in body.get("contributing_modalities", []):
             modality_counts[modality] += 1
 
     dominant_threat = threat_counts.most_common(1)[0][0] if threat_counts else "none"
@@ -217,12 +236,12 @@ def build_learning_plan(cluster: dict, latest: dict, alerts: list[dict]) -> dict
                 }
             )
             
-        if "compression" in node["learning_layers"] or True:
+        if "compression" in node["learning_layers"]:
             supervised_jobs.append(
                 {
                     "node_id": node["node_id"],
                     "job_type": "model_compression",
-                    "technique": "LAP-DTR", # Layer-Adaptive Partitioning with Dynamic Task Redistribution
+                    "technique": "LAP-DTR",  # Layer-Adaptive Partitioning with Dynamic Task Redistribution
                     "knowledge_distillation": True,
                     "trigger": "bandwidth-saturation-limit",
                 }
@@ -256,8 +275,12 @@ def build_learning_plan(cluster: dict, latest: dict, alerts: list[dict]) -> dict
 def highest_pressure_zone(records: list[dict]) -> str:
     if not records:
         return "idle"
-    zone_counts = Counter(record["envelope"]["body"]["site"] for record in records)
-    return zone_counts.most_common(1)[0][0]
+    zone_counts = Counter(
+        record["envelope"]["body"]["site"]
+        for record in records
+        if "envelope" in record and "body" in record["envelope"] and "site" in record["envelope"]["body"]
+    )
+    return zone_counts.most_common(1)[0][0] if zone_counts else "idle"
 
 
 def write_json(path: Path, payload: dict) -> None:

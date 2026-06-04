@@ -1,4 +1,4 @@
-use std::{collections::HashMap, time::Duration};
+use std::{collections::{HashMap, HashSet}, time::Duration};
 
 use tokio::{sync::mpsc, time::interval};
 use uriel_caesar_core::protocol::{FusedTrack, Modality, Observation};
@@ -32,6 +32,9 @@ pub struct FusionEngine {
     settings: EdgeConfig,
     rx: mpsc::Receiver<Observation>,
     tx: mpsc::Sender<FusedTrack>,
+    /// Per-track rolling acoustic/vibration buffers for z-score computation.
+    /// Keyed by track_hint so samples from different tracks never cross-contaminate.
+    acoustic_buffers: HashMap<String, (std::time::Instant, std::collections::VecDeque<f32>)>,
 }
 
 
@@ -41,7 +44,7 @@ impl FusionEngine {
         rx: mpsc::Receiver<Observation>,
         tx: mpsc::Sender<FusedTrack>,
     ) {
-        let engine = Self { settings, rx, tx };
+        let engine = Self { settings, rx, tx, acoustic_buffers: HashMap::new() };
         tokio::spawn(async move {
             engine.run().await;
         });
@@ -50,9 +53,6 @@ impl FusionEngine {
     async fn run(mut self) {
         let mut buckets: HashMap<String, Vec<Observation>> = HashMap::new();
         let mut ticker = interval(Duration::from_millis(self.settings.fusion_window_ms));
-        
-        let mut last_frame_time = std::time::Instant::now();
-        let mut acoustic_buffer = std::collections::VecDeque::with_capacity(100);
 
         loop {
             tokio::select! {
@@ -75,11 +75,7 @@ impl FusionEngine {
                     }
                 }
                 _ = ticker.tick() => {
-                    let tracks = self.flush_ready(
-                        &mut buckets,
-                        &mut last_frame_time,
-                        &mut acoustic_buffer,
-                    );
+                    let tracks = self.flush_ready(&mut buckets);
 
                     for track in tracks {
                         if self.tx.send(track).await.is_err() {
@@ -91,7 +87,7 @@ impl FusionEngine {
         }
     }
 
-    fn flush_ready(&self, buckets: &mut HashMap<String, Vec<Observation>>, last_frame_time: &mut std::time::Instant, acoustic_buffer: &mut std::collections::VecDeque<f32>) -> Vec<FusedTrack> {
+    fn flush_ready(&mut self, buckets: &mut HashMap<String, Vec<Observation>>) -> Vec<FusedTrack> {
         let mut ready = Vec::new();
 
         for (track_hint, observations) in buckets.iter_mut() {
@@ -107,15 +103,20 @@ impl FusionEngine {
             let confidence = observations.iter().map(|obs| obs.confidence).sum::<f32>()
                 / observations.len() as f32;
             
-            // Apply Extended Kalman Filter to positional observations
+            // Apply Extended Kalman Filter to positional observations.
+            // F4 FIX: Derive dt from consecutive observation timestamp_ms fields
+            // instead of Instant::now() which measures loop overhead (~µs), not
+            // real sensor inter-frame time. Use a 33ms default (30 fps) when
+            // timestamps are identical to avoid division-by-zero.
             let mut ekf = ExtendedKalmanFilter::new();
+            let mut prev_ts_ms: Option<u64> = None;
             for obs in observations.iter() {
-                // REAL HARDWARE IMPLEMENTATION: Calculate real delta time
-                let now = std::time::Instant::now();
-                let dt = now.duration_since(*last_frame_time).as_secs_f32().max(0.001);
-                ekf.predict(dt); 
-                *last_frame_time = now;
-                
+                let dt = match prev_ts_ms {
+                    Some(prev) => ((obs.timestamp_ms.saturating_sub(prev)) as f32 / 1000.0).max(0.001),
+                    None => 0.033, // 30 fps default on very first observation
+                };
+                prev_ts_ms = Some(obs.timestamp_ms);
+                ekf.predict(dt);
                 ekf.update([obs.position_m.0, obs.position_m.1], obs.confidence);
             }
             
@@ -134,13 +135,20 @@ impl FusionEngine {
             };
             
             // REAL HARDWARE IMPLEMENTATION: Dynamic Rolling Statistics
-            let z_score = if acoustic_buffer.len() > 10 {
-                let mean: f32 = acoustic_buffer.iter().sum::<f32>() / acoustic_buffer.len() as f32;
-                let variance = acoustic_buffer.iter().map(|value| {
+            // Use per-track acoustic buffer so velocity samples from one track
+            // never contaminate z-score computation for another track.
+            let now = std::time::Instant::now();
+            let (last_seen, track_buf) = self.acoustic_buffers
+                .entry(track_hint.clone())
+                .or_insert_with(|| (now, std::collections::VecDeque::with_capacity(100)));
+            *last_seen = now;
+            let z_score = if track_buf.len() > 10 {
+                let mean: f32 = track_buf.iter().sum::<f32>() / track_buf.len() as f32;
+                let variance = track_buf.iter().map(|value| {
                     let diff = mean - *value;
                     diff * diff
-                }).sum::<f32>() / acoustic_buffer.len() as f32;
-                let std_dev = variance.sqrt();
+                }).sum::<f32>() / track_buf.len() as f32;
+                let std_dev = variance.max(0.0).sqrt();
                 
                 if std_dev > 0.0 { (current_vib - mean) / std_dev } else { 0.0 }
             } else {
@@ -148,9 +156,9 @@ impl FusionEngine {
                 (current_vib - 0.018) / 0.005
             };
             
-            acoustic_buffer.push_back(current_vib);
-            if acoustic_buffer.len() > 100 {
-                acoustic_buffer.pop_front();
+            track_buf.push_back(current_vib);
+            if track_buf.len() > 100 {
+                track_buf.pop_front();
             }
 
             let velocity_mps = (!velocities.is_empty())
@@ -198,26 +206,21 @@ impl FusionEngine {
             observations.clear();
         }
 
+        buckets.retain(|_, obs| !obs.is_empty());
+        let stale_cutoff = std::time::Instant::now() - std::time::Duration::from_secs(60);
+        self.acoustic_buffers.retain(|_, (last_seen, _)| *last_seen > stale_cutoff);
+
         ready
     }
 }
 
 fn dedupe_strings(values: Vec<String>) -> Vec<String> {
-    let mut result = Vec::new();
-    for value in values {
-        if !result.contains(&value) {
-            result.push(value);
-        }
-    }
-    result
+    let mut seen = HashSet::new();
+    values.into_iter().filter(|v| seen.insert(v.clone())).collect()
 }
 
 fn dedupe_modalities(values: Vec<Modality>) -> Vec<Modality> {
-    let mut result = Vec::new();
-    for value in values {
-        if !result.contains(&value) {
-            result.push(value);
-        }
-    }
-    result
+    // Modality is a simple enum so we can compare cheaply; clone for the HashSet key.
+    let mut seen: HashSet<String> = HashSet::new();
+    values.into_iter().filter(|v| seen.insert(format!("{:?}", v))).collect()
 }

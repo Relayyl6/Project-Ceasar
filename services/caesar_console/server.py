@@ -9,7 +9,7 @@ def _ensure(pkg: str, import_name: str | None = None) -> None:
         __import__(name)
     except ModuleNotFoundError:
         print(f"[caesar.boot] Installing missing dependency: {pkg} ...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", pkg, "--quiet"])
+        subprocess.check_call([sys.executable, "-m", "pip", "install", pkg, "--quiet"], timeout=120)
         print(f"[caesar.boot] {pkg} installed successfully.")
 
 _ensure("opencv-python", "cv2")
@@ -28,7 +28,42 @@ from collections import Counter
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import re
 from urllib.parse import parse_qs, urlparse
+
+# Maximum bytes accepted in a POST body (prevents a client from sending an
+# arbitrarily large Content-Length that would block rfile.read() indefinitely).
+_MAX_POST_BYTES = 64 * 1024  # 64 KiB — plenty for any actuator command
+
+# Maximum rows that any paginated API endpoint will return.  Prevents a caller
+# from sending limit=999999999 to exhaust memory reading a huge JSONL file.
+_MAX_QUERY_LIMIT = 5_000
+
+# Maximum bytes for a single structured JSON file read (node-registry,
+# orchestration-plan, etc.).  Guards against an accidentally enormous file
+# exhausting the server process's memory on /api/node-registry and friends.
+_MAX_FILE_BYTES = 4 * 1024 * 1024  # 4 MiB
+
+# Allowed characters in a node_id supplied over HTTP.  Rejects path traversal
+# and shell-injection attempts before the value reaches PIL / filesystem code.
+_NODE_ID_RE = re.compile(r'^[\w.-]{1,64}$')
+
+
+def _safe_limit(qs: dict, key: str, default: int, maximum: int = _MAX_QUERY_LIMIT) -> int:
+    """Parse an integer query-string parameter with a safe upper bound."""
+    raw = qs.get(key, [str(default)])[0]
+    try:
+        value = int(raw)
+    except (ValueError, OverflowError):
+        value = default
+    return max(1, min(value, maximum))
+
+
+def _safe_node_id(raw: str) -> str:
+    """Return the raw node_id if it looks safe, or 'local' as a fallback."""
+    if _NODE_ID_RE.match(raw):
+        return raw
+    return "local"
 
 # ── CAMERA STATE ─────────────────────────────────────────────────────────────
 _camera_lock = threading.Lock()
@@ -188,10 +223,10 @@ class CaesarConsoleHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/latest":
             return self.write_json(read_latest(self.latest_path))
         if parsed.path == "/api/journal":
-            limit = int(parse_qs(parsed.query).get("limit", ["100"])[0])
+            limit = _safe_limit(parse_qs(parsed.query), "limit", 100)
             return self.write_json(read_jsonl_tail(self.journal_path, limit))
         if parsed.path == "/api/high-interest":
-            limit = int(parse_qs(parsed.query).get("limit", ["100"])[0])
+            limit = _safe_limit(parse_qs(parsed.query), "limit", 100)
             return self.write_json(read_jsonl_tail(self.high_interest_path, limit))
         if parsed.path == "/api/regional-summary":
             return self.write_json(read_json(self.regional_summary_path))
@@ -202,7 +237,7 @@ class CaesarConsoleHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/node-registry":
             return self.write_json(read_json(self.node_registry_path))
         if parsed.path == "/api/governance-audit":
-            limit = int(parse_qs(parsed.query).get("limit", ["25"])[0])
+            limit = _safe_limit(parse_qs(parsed.query), "limit", 25)
             return self.write_json(read_jsonl_tail(self.governance_audit_path, limit))
         if parsed.path == "/api/stats":
             stats = build_stats(
@@ -217,7 +252,7 @@ class CaesarConsoleHandler(BaseHTTPRequestHandler):
 
         # ── LIVE CAMERA ENDPOINTS ─────────────────────────────────────────────
         if parsed.path == "/api/camera-frame":
-            node_id = parse_qs(parsed.query).get("node", ["local"])[0]
+            node_id = _safe_node_id(parse_qs(parsed.query).get("node", ["local"])[0])
             jpeg = _grab_frame(node_id)
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "image/jpeg")
@@ -230,7 +265,7 @@ class CaesarConsoleHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/camera-stream":
             # Multipart MJPEG stream — browsers consume this natively
-            node_id = parse_qs(parsed.query).get("node", ["local"])[0]
+            node_id = _safe_node_id(parse_qs(parsed.query).get("node", ["local"])[0])
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=caesarframe")
             self.send_header("Cache-Control", "no-store")
@@ -252,7 +287,7 @@ class CaesarConsoleHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/anomaly-log":
-            limit = int(parse_qs(parsed.query).get("limit", ["20"])[0])
+            limit = _safe_limit(parse_qs(parsed.query), "limit", 20)
             # Auto-populate from live high-interest file if log is sparse
             if len(_anomaly_log) < 5:
                 recent = read_jsonl_tail(self.high_interest_path, 20)
@@ -313,14 +348,27 @@ class CaesarConsoleHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path == "/api/actuate":
-            content_length = int(self.headers.get('Content-Length', 0))
+            # F12 FIX: Handle missing Content-Length gracefully.
+            # Security: cap the read at _MAX_POST_BYTES regardless of what the
+            # client advertises — prevents a crafted Content-Length from blocking
+            # the handler thread on a very large rfile.read() call.
+            raw_cl = self.headers.get('Content-Length')
+            try:
+                advertised = int(raw_cl) if raw_cl is not None else _MAX_POST_BYTES
+            except (ValueError, OverflowError):
+                advertised = _MAX_POST_BYTES
+            content_length = max(0, min(advertised, _MAX_POST_BYTES))
             post_data = self.rfile.read(content_length)
             try:
                 command = json.loads(post_data)
+                if not isinstance(command, dict):
+                    raise ValueError("JSON body must be an object")
                 node_id = command.get("node_id", "unknown")
                 print(f"[caesar.hub.actuate] Dispatching command to {node_id}: {command}")
                 
                 # C5 FIX: Use the configured broker host/port instead of hardcoded "localhost".
+                # F13 FIX: Pass a timeout to mqtt.publish.single so a dead broker
+                # cannot block this HTTP handler thread indefinitely.
                 try:
                     import paho.mqtt.publish as mqtt_publish
                     mqtt_publish.single(
@@ -328,9 +376,20 @@ class CaesarConsoleHandler(BaseHTTPRequestHandler):
                         payload=json.dumps(command),
                         hostname=self.mqtt_broker_host,
                         port=self.mqtt_broker_port,
+                        keepalive=5,
                     )
                 except Exception as e:
-                    print(f"[caesar.hub.actuate] MQTT publish failed (broker={self.mqtt_broker_host}:{self.mqtt_broker_port}): {e}")
+                    # Catch both paho protocol errors and lower-level socket/OS
+                    # errors.  Import lazily so the name is available without
+                    # requiring a top-level import of the paho client module.
+                    try:
+                        from paho.mqtt.client import MQTTException
+                        if isinstance(e, MQTTException):
+                            print(f"[caesar.hub.actuate] MQTT protocol error (broker={self.mqtt_broker_host}:{self.mqtt_broker_port}): {e}")
+                        else:
+                            print(f"[caesar.hub.actuate] MQTT publish failed (broker={self.mqtt_broker_host}:{self.mqtt_broker_port}): {e}")
+                    except ImportError:
+                        print(f"[caesar.hub.actuate] MQTT publish failed (broker={self.mqtt_broker_host}:{self.mqtt_broker_port}): {e}")
 
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "application/json")
@@ -376,11 +435,21 @@ def read_latest(path: Path) -> dict:
 def read_json(path: Path):
     if not path.exists():
         return {}
+    # Guard against reading a pathologically large file into memory.
+    if path.stat().st_size > _MAX_FILE_BYTES:
+        print(f"[caesar] WARNING: {path} exceeds _MAX_FILE_BYTES ({_MAX_FILE_BYTES} B), skipping.",
+              file=__import__('sys').stderr)
+        return {}
     return json.loads(path.read_text(encoding="utf-8"))
 
 
 def read_jsonl_tail(path: Path, limit: int) -> list[dict]:
     if not path.exists():
+        return []
+    # Guard against reading a pathologically large file into memory.
+    if path.stat().st_size > _MAX_FILE_BYTES:
+        print(f"[caesar] WARNING: {path} exceeds _MAX_FILE_BYTES ({_MAX_FILE_BYTES} B), skipping.",
+              file=__import__('sys').stderr)
         return []
     lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
     return [json.loads(line) for line in lines[-limit:]][::-1]

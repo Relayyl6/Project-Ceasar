@@ -61,25 +61,37 @@ impl ReconWorker {
                 }
                 sleep(Duration::from_secs(15)).await;
 
-                // Simulate ONVIF CCTV hijacking
-                // Actively probe the local subnet for ONVIF/RTSP cameras on port 554/80
+                // H6 FIX: Async ONVIF subnet scan — all 20 probes run concurrently
+                // so the total latency is ~80ms instead of 20 × 80ms = 1.6s blocking.
                 let base_ip = self.config.uplink.tcp_addr.as_deref()
                     .and_then(|a| a.split(':').next())
                     .and_then(|ip| ip.rsplitn(2, '.').last())
-                    .unwrap_or("192.168.1");
-                let mut found_streams = 0u32;
-                for last_octet in 1u8..=20 {
-                    let target = format!("{}.{}:554", base_ip, last_octet);
-                    if std::net::TcpStream::connect_timeout(
-                        &target.parse().unwrap_or_else(|_| "0.0.0.0:554".parse().unwrap()),
-                        std::time::Duration::from_millis(80),
-                    ).is_ok() {
-                        println!("[edge.recon.onvif] RTSP stream found at {}", target);
-                        found_streams += 1;
+                    .unwrap_or("192.168.1")
+                    .to_owned();
+                {
+                    let mut set = tokio::task::JoinSet::new();
+                    for last_octet in 1u8..=20 {
+                        let addr = format!("{}.{}:554", base_ip, last_octet);
+                        set.spawn(async move {
+                            let result = tokio::time::timeout(
+                                std::time::Duration::from_millis(80),
+                                tokio::net::TcpStream::connect(&addr),
+                            ).await;
+                            (addr, result.is_ok())
+                        });
                     }
-                }
-                if found_streams == 0 {
-                    println!("[edge.recon.onvif] Subnet scan complete. No unsecured RTSP streams found.");
+                    let mut found_streams = 0u32;
+                    while let Some(res) = set.join_next().await {
+                        if let Ok(Ok((addr, reachable))) = res {
+                            if reachable {
+                                println!("[edge.recon.onvif] RTSP stream found at {}", addr);
+                                found_streams += 1;
+                            }
+                        }
+                    }
+                    if found_streams == 0 {
+                        println!("[edge.recon.onvif] Subnet scan complete. No unsecured RTSP streams found.");
+                    }
                 }
                 sleep(Duration::from_secs(30)).await;
 
@@ -106,17 +118,21 @@ impl ReconWorker {
                 #[cfg(target_os = "linux")]
                 {
                     println!("[edge.recon.pcap] Engaging 802.11 monitor mode for TDoA triangulation...");
+                    // Use recon_interface from config if set, otherwise try wlan0.
+                    // wlan1 is not used as a default — most Pi deployments only have wlan0.
+                    // For monitor mode, a second USB WiFi adapter is typically needed.
+                    let iface = self.config.recon_interface.as_deref().unwrap_or("wlan0");
                     let mut pcap_active = false;
-                    if let Ok(mut cap) = pcap::Capture::from_device("wlan1") {
+                    if let Ok(mut cap) = pcap::Capture::from_device(iface) {
                         if let Ok(cap_promisc) = cap.promisc(true).rfmon(true).open() {
                             if cap_promisc.filter("wlan type mgt subtype probe-req", true).is_ok() {
                                 pcap_active = true;
-                                println!("[edge.recon.pcap.real] Monitor mode locked. Catching 802.11 Probe Requests.");
+                                println!("[edge.recon.pcap.real] Monitor mode locked on {}. Catching 802.11 Probe Requests.", iface);
                             }
                         }
                     }
                     if !pcap_active {
-                        println!("[edge.recon.pcap] Hardware PCAP failed on wlan1. Simulating 802.11 probe ingestion...");
+                        println!("[edge.recon.pcap] Hardware PCAP failed on {}. Simulating 802.11 probe ingestion...", iface);
                     }
                 }
                 #[cfg(not(target_os = "linux"))]

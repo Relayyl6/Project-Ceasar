@@ -48,17 +48,28 @@ def load_runtime(args: argparse.Namespace):
     except ImportError as exc:
         raise SystemExit("onnxruntime is required for scripts/onnx_hook.py") from exc
 
-    SESSION = ort.InferenceSession(
-        str(Path(args.model)),
-        providers=[provider.strip() for provider in args.providers.split(",") if provider.strip()],
-    )
+    model_path = Path(args.model)
+    if not model_path.exists():
+        raise SystemExit(f"ONNX model file not found: {model_path}")
+    try:
+        SESSION = ort.InferenceSession(
+            str(model_path),
+            providers=[provider.strip() for provider in args.providers.split(",") if provider.strip()],
+        )
+    except Exception as e:
+        raise SystemExit(f"Failed to load ONNX model: {e}")
     SESSION_INPUT_NAME = SESSION.get_inputs()[0].name
     CLASS_LABELS = load_labels(args.labels)
 
 
 def load_labels(path: str | None) -> list[str]:
     if path:
-        return [line.strip() for line in Path(path).read_text(encoding="utf-8").splitlines() if line.strip()]
+        try:
+            return [line.strip() for line in Path(path).read_text(encoding="utf-8").splitlines() if line.strip()]
+        except FileNotFoundError:
+            raise SystemExit(f"Labels file not found: {path}")
+        except Exception as e:
+            raise SystemExit(f"Failed to read labels file {path}: {e}")
     return COCO80
 
 
@@ -66,10 +77,38 @@ def main() -> int:
     args = parse_args()
     load_runtime(args)
 
-    request = json.load(sys.stdin)
-    frame_path = Path(request["frame_path"])
-    frame_bytes = frame_path.read_bytes()
+    try:
+        request = json.load(sys.stdin)
+    except json.JSONDecodeError as e:
+        raise SystemExit(f"Invalid JSON provided on stdin: {e}")
+
+    # Validate required fields before use.
+    if "frame_path" not in request:
+        raise SystemExit("Request JSON must contain 'frame_path'")
+
+    frame_path = Path(request["frame_path"]).resolve()
+
+    # Path traversal guard: reject paths that escape the current working directory.
+    # In production, replace Path.cwd() with the configured frames base directory.
+    frames_base = Path.cwd().resolve()
+    try:
+        frame_path.relative_to(frames_base)
+    except ValueError:
+        raise SystemExit(
+            f"Path traversal rejected: '{frame_path}' is outside the allowed base '{frames_base}'"
+        )
+
+    if not frame_path.exists():
+        raise SystemExit(f"Frame file not found: {frame_path}")
+
+    try:
+        frame_bytes = frame_path.read_bytes()
+    except Exception as e:
+        raise SystemExit(f"Failed to read frame file {frame_path}: {e}")
     digest = hashlib.blake2s(frame_bytes).hexdigest()
+
+    # 'sequence' is optional; default to 0 so track_hint generation is always safe.
+    sequence = int(request.get("sequence", 0))
 
     image_tensor, meta = preprocess_image(frame_path, args.imgsz)
     outputs = SESSION.run(None, {SESSION_INPUT_NAME: image_tensor})
@@ -78,7 +117,7 @@ def main() -> int:
 
     if best is None:
         response = {
-            "track_hint": f"no-target-{request['sequence'] % 32}",
+            "track_hint": f"no-target-{sequence % 32}",
             "confidence": 0.05,
             "class_label": "no_detection",
             "position_m": [args.scene_width_m / 2.0, args.scene_depth_m / 2.0],
@@ -93,7 +132,7 @@ def main() -> int:
             round((cy / meta["orig_h"]) * args.scene_depth_m, 3),
         ]
         response = {
-            "track_hint": f"{best['label']}-{request['sequence'] % 32}",
+            "track_hint": f"{best['label']}-{sequence % 32}",
             "confidence": round(float(best["confidence"]), 5),
             "class_label": best["label"],
             "position_m": position_m,
@@ -112,7 +151,10 @@ def preprocess_image(frame_path: Path, imgsz: int):
     except ImportError as exc:
         raise SystemExit("numpy and Pillow are required for scripts/onnx_hook.py") from exc
 
-    image = Image.open(frame_path).convert("RGB")
+    try:
+        image = Image.open(frame_path).convert("RGB")
+    except Exception as exc:
+        raise SystemExit(f"Failed to decode image {frame_path}: {exc}")
     orig_w, orig_h = image.size
     scale = min(imgsz / orig_w, imgsz / orig_h)
     resized_w = max(1, int(round(orig_w * scale)))

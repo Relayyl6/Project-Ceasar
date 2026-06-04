@@ -38,6 +38,7 @@ struct Cli {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     let settings: EdgeConfig = read_toml(&cli.config)?;
+    settings.validate()?;
 
     println!(
         "[caesar] Booting Uriel edge node '{}' | site='{}' | domain='{}' | uplink='{}'",
@@ -63,9 +64,14 @@ async fn main() -> Result<()> {
     let (observation_tx, observation_rx) = mpsc::channel::<Observation>(128);
     let (fused_tx, mut fused_rx)         = mpsc::channel::<FusedTrack>(128);
 
-    // Sentinel feed channel — dashboard subscribes to receive live frames,
-    // change portraits, and actuator dispatch logs.
-    let (sentinel_feed_tx, mut sentinel_feed_rx) = broadcast::channel::<SentinelFeedEvent>(64);
+    // Sentinel feed channel — only created when the sentinel is enabled.
+    // The broadcast sender is passed into SentinelWorker; the receiver goes
+    // to the dashboard log forwarder. Both are dropped if sentinel is off.
+    let sentinel_feed_pair = if settings.sentinel.enabled {
+        Some(broadcast::channel::<SentinelFeedEvent>(64))
+    } else {
+        None
+    };
 
     // Build the ActuatorBus from config — always constructed so LogActuator
     // provides an audit trail even when sentinel is disabled.
@@ -179,6 +185,9 @@ async fn main() -> Result<()> {
             "[caesar.sentinel] Sentinel mode active — OpenCV gatekeeper online. Standard optical worker bypassed."
         );
 
+        let (sentinel_feed_tx, mut sentinel_feed_rx) =
+            sentinel_feed_pair.expect("sentinel_feed_pair must be Some when enabled");
+
         SentinelWorker::new(
             settings.clone(),
             observation_tx.clone(),
@@ -221,6 +230,8 @@ async fn main() -> Result<()> {
             }
         });
     } else {
+        // Consume and discard the None sentinel pair.
+        let _ = sentinel_feed_pair;
         // === STANDARD MODE ===
         // Full optical worker runs on every frame — legacy behaviour preserved.
         spawn_optical_worker(
@@ -236,9 +247,18 @@ async fn main() -> Result<()> {
 
     let mut published = 0usize;
     while let Some(track) = fused_rx.recv().await {
-        let envelope = signer.sign_track(&settings.node_id, &settings.publish_topic, track)?;
-        uplink.publish(&envelope).await?;
-        published += 1;
+        match signer.sign_track(&settings.node_id, &settings.publish_topic, track) {
+            Ok(envelope) => {
+                // Don't exit the node on a single publish failure (e.g. transient TCP drop).
+                // The uplink reconnects on the next call; log and continue.
+                if let Err(e) = uplink.publish(&envelope).await {
+                    eprintln!("[caesar.uplink] Publish error (will retry on next track): {e:#}");
+                } else {
+                    published += 1;
+                }
+            }
+            Err(e) => eprintln!("[caesar.signer] Failed to sign track: {e:#}"),
+        }
 
         if settings.loop_count != 0 && published >= settings.loop_count {
             println!(

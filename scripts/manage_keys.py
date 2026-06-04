@@ -30,28 +30,43 @@ def main() -> int:
     if args.command == "generate":
         seed = secrets.token_bytes(32)
     else:
-        seed = bytes.fromhex(args.seed_hex)
+        try:
+            seed = bytes.fromhex(args.seed_hex)
+        except ValueError:
+            raise SystemExit("Invalid seed hex string")
         if len(seed) != 32:
             raise SystemExit("seed hex must decode to exactly 32 bytes")
 
     signing_key = SigningKey(seed)
     verify_key = signing_key.verify_key
 
+    public_key_hex = verify_key.encode().hex()
+
+    # SECURITY: The private seed is written to stderr only, never stdout.
+    # Stdout is reserved for the public key so it can be safely captured by
+    # shell pipelines and CI systems without leaking the signing secret.
+    import sys
+    print(f"seed_hex (KEEP SECRET): {seed.hex()}", file=sys.stderr)
+
     payload = {
-        "seed_hex": seed.hex(),
-        "public_key": verify_key.encode().hex(),
+        "public_key": public_key_hex,
     }
 
     if getattr(args, "hub_config", None):
-        update_hub_config(Path(args.hub_config), payload["public_key"])
+        update_hub_config(Path(args.hub_config), public_key_hex)
 
     print(json.dumps(payload, indent=2))
     return 0
 
 
 def update_hub_config(path: Path, public_key: str) -> None:
-    raw = path.read_text(encoding="utf-8")
-    match = re.search(r"^trusted_public_keys\s*=\s*\[(.*)\]\s*$", raw, re.MULTILINE)
+    if not path.exists():
+        raise SystemExit(f"Hub config not found: {path}")
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except Exception as e:
+        raise SystemExit(f"Failed to read hub config {path}: {e}")
+    match = re.search(r"^trusted_public_keys\s*=\s*\[(.*?)\]", raw, re.MULTILINE)
     if not match:
         raise SystemExit(f"Could not find trusted_public_keys in {path}")
 
@@ -63,7 +78,10 @@ def update_hub_config(path: Path, public_key: str) -> None:
         entries.append(public_key)
     replacement = 'trusted_public_keys = [{}]'.format(", ".join(f'"{item}"' for item in entries))
     updated = raw[: match.start()] + replacement + raw[match.end() :]
-    path.write_text(updated, encoding="utf-8")
+    try:
+        path.write_text(updated, encoding="utf-8")
+    except Exception as e:
+        raise SystemExit(f"Failed to write updated hub config {path}: {e}")
 
 
 if __name__ == "__main__":

@@ -37,7 +37,18 @@ def read_mlx90640_hardware(bus: int, address_str: str) -> list[float]:
         sensor.i2c_init(f"/dev/i2c-{bus}")
         sensor.set_refresh_rate(mlx90640.RefreshRate.RATE_2_HZ)
         frame = [0.0] * 768
-        sensor.get_frame_data(frame)
+        try:
+            sensor.get_frame_data(frame)
+        except Exception as hw_err:
+            # Sensor I/O failure (e.g. IOError, OSError from smbus) after the
+            # library successfully imported — fall through to synthetic so the
+            # pipeline keeps running rather than crashing.
+            print(
+                f"[thermal_adapter] MLX90640 frame read failed ({hw_err}). "
+                "Generating synthetic frame.",
+                file=sys.stderr,
+            )
+            return _synthetic_frame(32, 24)
         return frame
     except ImportError:
         # smbus2/mlx90640 not installed — try raw smbus read
@@ -61,6 +72,9 @@ def read_mlx90640_hardware(bus: int, address_str: str) -> list[float]:
 def _synthetic_frame(width: int, height: int) -> list[float]:
     t = time.time()
     cell_count = width * height
+    # NOTE: int(t) causes a once-per-second step in the offset term; this is
+    # intentional for a crude "tick" effect but means the frame is not
+    # perfectly smooth at second boundaries.  Use t directly if that matters.
     return [
         22.0 + math.sin(t * 0.3 + i * 0.07) * 4.0 + ((i * 7 + int(t)) % 13) * 0.5
         for i in range(cell_count)

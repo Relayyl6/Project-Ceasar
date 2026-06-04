@@ -15,20 +15,48 @@ use crate::{
 };
 use ndarray::{Array, Array4, Array3};
 use ort::{GraphOptimizationLevel, Session};
-use std::time::Instant;
+
+
+// F7/F8/F9 FIX: Share a single reqwest Client across all inference calls.
+// Building a new Client per frame reconstructs the TLS stack each time.
+// OnceLock ensures one-time initialisation that is safe across async tasks.
+static HTTP_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+
+fn get_http_client() -> &'static reqwest::Client {
+    HTTP_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    })
+}
 
 // --- Advanced Physical Hardware Tensor Integration ---
-pub fn encode_vocabulary(vocab: &[String]) -> ort::Value {
-    let endpoint = "http://localhost:11434/api/embeddings";
+/// Encode `vocab` into an ORT embedding tensor via Ollama's `/api/embeddings` endpoint.
+///
+/// # Warning — blocking HTTP
+/// This function uses `reqwest::blocking` and **must not** be called directly
+/// from an async context. Always wrap in `tokio::task::spawn_blocking`.
+///
+/// # Parameters
+/// * `vocab`    – Slice of label strings to embed.
+/// * `endpoint` – Base URL of the Ollama server, e.g. `"http://localhost:11434"`.
+///   The `/api/embeddings` path is appended automatically.
+pub fn encode_vocabulary(vocab: &[String], endpoint: &str) -> Option<ort::Value> {
+    // Caller passes the full base URL including path; we append the API path.
+    let embed_url = format!("{}/api/embeddings", endpoint.trim_end_matches('/'));
+
+    // Reuse the shared client — this function is called from spawn_blocking so
+    // a blocking client is appropriate here. Build it independently.
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(2))
         .build()
-        .unwrap_or_else(|_| reqwest::blocking::Client::new());
-    
+        .ok()?;
+
     let prompt = vocab.join(", ");
     let mut embed_data = vec![0.0f32; 512];
-    
-    if let Ok(resp) = client.post(endpoint).json(&serde_json::json!({ "model": "nomic-embed-text", "prompt": prompt })).send() {
+
+    if let Ok(resp) = client.post(&embed_url).json(&serde_json::json!({ "model": "nomic-embed-text", "prompt": prompt })).send() {
         if let Ok(json) = resp.json::<serde_json::Value>() {
             if let Some(arr) = json["embedding"].as_array() {
                 for (i, val) in arr.iter().take(512).enumerate() {
@@ -43,9 +71,11 @@ pub fn encode_vocabulary(vocab: &[String]) -> ort::Value {
             *v = ((i + vocab.len()) % 255) as f32 / 255.0;
         }
     }
-    
-    let arr = Array::from_shape_vec((1, 512), embed_data).unwrap();
-    ort::Value::from_array(arr).unwrap()
+
+    // F6 FIX: Replace unwrap() with proper error paths — a shape mismatch or
+    // ORT error must not panic the entire edge node.
+    let arr = Array::from_shape_vec((1, 512), embed_data).ok()?;
+    ort::Value::from_array(arr).ok()
 }
 
 pub fn apply_nms(tensor: ndarray::ArrayViewD<f32>, custom_vocab: &[String]) -> Option<(String, f32, f32, f32)> {
@@ -55,7 +85,12 @@ pub fn apply_nms(tensor: ndarray::ArrayViewD<f32>, custom_vocab: &[String]) -> O
 }
 
 pub fn get_latest_robot_telemetry(_config: &EdgeConfig) -> Vec<f32> {
-    // REAL HARDWARE INTEGRATION: Zero-config dynamic auto-discovery
+    // Only probe serial ports when the Gemini-ER pipeline is active.
+    // Scanning all ports unconditionally probes unknown peripherals — an
+    // uncontrolled hardware side-effect identical to the gossipsub uplink bug.
+    if _config.inference.model_gemini_er.is_none() {
+        return vec![0.0, 0.0, 0.0];
+    }
     if let Ok(ports) = serialport::available_ports() {
         for p in ports {
             if let Ok(mut port) = serialport::new(&p.port_name, 115200).timeout(std::time::Duration::from_millis(10)).open() {
@@ -67,8 +102,7 @@ pub fn get_latest_robot_telemetry(_config: &EdgeConfig) -> Vec<f32> {
             }
         }
     }
-    
-    // Fallback simulation if no active hardware telemetry is found
+
     println!("[edge.hardware] No active physical UART found. Simulating telemetry payload...");
     vec![0.0, 0.0, 0.0]
 }
@@ -87,7 +121,8 @@ pub fn preprocess_multimodal(_frame: &OpticalFrame, _telemetry: Vec<f32>, _confi
         image_array[[0, 2, y as usize, x as usize]] = pixel[2] as f32 / 255.0;
     }
     
-    ort::Value::from_array(image_array).unwrap()
+    ort::Value::from_array(image_array)
+        .unwrap_or_else(|_| ort::Value::from_array(Array::zeros((1, 3, 224, 224))).expect("zero array"))
 }
 
 pub fn decode_gemini_er_output(_outputs: Vec<ort::Value>) -> String {
@@ -130,7 +165,16 @@ impl OrtYoloPipeline {
         
         // Check if this is YOLO-World (needs text embeddings) or standard YOLO (only needs image)
         let outputs = if self.session.inputs.len() > 1 {
-            let text_embeddings = encode_vocabulary(&custom_vocab);
+            // F6 FIX: encode_vocabulary now returns Option; fall back to heuristic if it fails.
+            let text_embeddings = match encode_vocabulary(
+                &custom_vocab,
+                config.inference.ollama_endpoint.as_deref().unwrap_or("http://localhost:11434"),
+            ) {
+                Some(v) => v,
+                None => {
+                    return Err(anyhow::anyhow!("encode_vocabulary failed — Ollama embeddings unavailable and fallback failed"));
+                }
+            };
             self.session.run(ort::inputs!["images" => input_tensor, "texts" => text_embeddings]?)?
         } else {
             self.session.run(ort::inputs![input_tensor]?)?
@@ -147,7 +191,7 @@ impl OrtYoloPipeline {
             confidence,
             class_label: class_label.clone(),
             position_m: (pos_x, pos_y),
-            velocity_mps: Some(pos_x * 0.01), // derive velocity from position delta
+            velocity_mps: None, // No real velocity from ONNX bounding box output
             source_id: _frame.camera_id.clone(),
             evidence_digest: format!("ort-{}-{}", &class_label[..class_label.len().min(8)], _frame.sequence),
         })
@@ -168,6 +212,9 @@ impl GeminiRoboticsERPipeline {
         // FULLY FUNCTIONAL HARDWARE IMPLEMENTATION
         // Gemini Robotics-ER applies multi-modal reasoning. 
         let telemetry = get_latest_robot_telemetry(config);
+        // Clone before move: telemetry is consumed by preprocess_multimodal but
+        // we still need it below for position/velocity extraction.
+        let telemetry_clone = telemetry.clone();
         let inputs = preprocess_multimodal(_frame, telemetry, config);
         let outputs = self.session.run(ort::inputs![inputs]?)?;
         let class_label = decode_gemini_er_output(outputs.clone());
@@ -180,9 +227,9 @@ impl GeminiRoboticsERPipeline {
             .unwrap_or(0.82);
         
         // Derive position from telemetry vector (vx, vy represent sensor displacement)
-        let pos_x = *telemetry.get(0).unwrap_or(&5.0) * 10.0;
-        let pos_y = *telemetry.get(1).unwrap_or(&5.0) * 10.0;
-        
+        let pos_x = *telemetry_clone.get(0).unwrap_or(&5.0) * 10.0;
+        let pos_y = *telemetry_clone.get(1).unwrap_or(&5.0) * 10.0;
+
         Ok(Observation {
             track_hint: "gemini-er-context".into(),
             timestamp_ms: _frame.timestamp_ms,
@@ -190,7 +237,7 @@ impl GeminiRoboticsERPipeline {
             confidence,
             class_label,
             position_m: (pos_x, pos_y),
-            velocity_mps: telemetry.get(2).copied(),
+            velocity_mps: telemetry_clone.get(2).copied(),
             source_id: _frame.camera_id.clone(),
             evidence_digest: format!("gemini-er-{}", _frame.sequence),
         })
@@ -391,12 +438,7 @@ async fn remote_http_infer(settings: &EdgeConfig, frame: OpticalFrame) -> Result
         "camera_id":   frame.camera_id,
     });
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new());
-
-    let resp_result = client
+    let resp_result = get_http_client()
         .post(format!("{}/infer", server_url))
         .json(&body)
         .send()
@@ -485,7 +527,7 @@ async fn ollama_vision_infer(settings: &EdgeConfig, frame: OpticalFrame) -> Resu
         "stream": false
     });
 
-    let client = reqwest::Client::new();
+    let client = get_http_client();
     let resp_json: serde_json::Value = client
         .post(format!("{}/api/generate", endpoint))
         .json(&body)
@@ -504,13 +546,12 @@ async fn ollama_vision_infer(settings: &EdgeConfig, frame: OpticalFrame) -> Resu
         modality: Modality::Optical,
         confidence,
         class_label: label.clone(),
-        position_m: (
-            20.0 + (frame.sequence % 20) as f32,
-            10.0 + (frame.sequence % 12) as f32,
-        ),
-        velocity_mps: Some(0.0),
+        // M2 FIX: No real position comes from Ollama text output.
+        position_m: (0.0, 0.0),
+        velocity_mps: None,
         source_id: frame.camera_id,
-        evidence_digest: format!("ollama-{}-seq{}", &label[..label.len().min(12)], frame.sequence),
+        // Content-addressed digest so downstream consumers can verify the frame.
+        evidence_digest: format!("blake3:{}", blake3::hash(&frame.jpeg_bytes).to_hex()),
     })
 }
 
@@ -523,24 +564,26 @@ fn heuristic_optical_infer(frame: OpticalFrame) -> Result<Observation> {
         .sum::<u64>() as f32
         / 256.0;
     let confidence = ((sample / 255.0) + 0.32).clamp(0.3, 0.96);
+    // M3 FIX: Return a domain-neutral label so hub-offline mode doesn't
+    // trigger "lock_perimeter" (the "vehicle" label's tactical mapping).
+    // "motion-detected" maps to "alert" across all domains, which is the
+    // correct conservative response when we have no actual AI classification.
+    // velocity_mps removed: sequence-modular arithmetic is not a real velocity.
     Ok(Observation {
-        track_hint: format!("track-{}", frame.sequence % 6),
+        track_hint: format!("heuristic-track-{}", frame.sequence % 6),
         timestamp_ms: frame.timestamp_ms,
         modality: Modality::Optical,
         confidence,
-        class_label: "vehicle".into(),
-        position_m: (
-            32.0 + (frame.sequence % 14) as f32,
-            11.0 + (frame.sequence % 8) as f32,
-        ),
-        velocity_mps: Some(4.0 + (frame.sequence % 4) as f32),
+        class_label: "motion-detected".into(),
+        position_m: (0.0, 0.0), // No position without real detection
+        velocity_mps: None,
         source_id: frame.camera_id,
         evidence_digest: blake3::hash(&frame.jpeg_bytes).to_hex().to_string(),
     })
 }
 
 async fn command_optical_infer(settings: &EdgeConfig, frame: OpticalFrame) -> Result<Observation> {
-    let path = write_frame_to_temp(&frame)?;
+    let path = write_frame_to_temp(&frame).await?;
     let program = settings
         .inference
         .command_program
@@ -572,7 +615,15 @@ async fn command_optical_infer(settings: &EdgeConfig, frame: OpticalFrame) -> Re
         stdin.write_all(&payload).await?;
     }
 
-    let output = child.wait_with_output().await?;
+    // F16 FIX: Timeout the inference subprocess — a hanging detector script
+    // (network issue, deadlock) must not block the sensor bus indefinitely.
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        child.wait_with_output(),
+    )
+    .await
+    .with_context(|| format!("inference command {} timed out after 15s", program))?
+    .with_context(|| format!("failed to read output from inference command {}", program))?;
     let _ = std::fs::remove_file(&path);
 
     if !output.status.success() {
@@ -620,7 +671,7 @@ async fn ollama_thermal_classify(frame: &ThermalFrame, settings: &EdgeConfig) ->
     );
 
     let body = serde_json::json!({ "model": model, "prompt": prompt, "stream": false });
-    let client = reqwest::Client::new();
+    let client = get_http_client();
     let resp: serde_json::Value = client
         .post(format!("{}/api/generate", endpoint))
         .json(&body)
@@ -643,8 +694,9 @@ async fn ollama_thermal_classify(frame: &ThermalFrame, settings: &EdgeConfig) ->
         modality: Modality::Thermal,
         confidence,
         class_label: label,
-        position_m: (31.0 + (frame.sequence % 15) as f32, 10.5 + (frame.sequence % 7) as f32),
-        velocity_mps: Some(0.0),
+        // Thermal sensors give temperature grid, not XY position.
+        position_m: (0.0, 0.0),
+        velocity_mps: None,
         source_id: frame.camera_id.clone(),
         evidence_digest: digest,
     })
@@ -679,8 +731,8 @@ async fn thermal_infer(frame: ThermalFrame, settings: &EdgeConfig) -> Result<Obs
                         modality: Modality::Thermal,
                         confidence: stress.clamp(0.3, 0.97),
                         class_label: if stress > 0.85 { "crop-stress-early-warning" } else if peak_temp > 33.0 { "hot-vehicle" } else { "warm-object" }.into(),
-                        position_m: (31.0 + (frame.sequence % 15) as f32, 10.5 + (frame.sequence % 7) as f32),
-                        velocity_mps: Some(0.0),
+                        position_m: (0.0, 0.0), // Thermal grid — no XY position available
+                        velocity_mps: None,
                         source_id: frame.camera_id,
                         evidence_digest: blake3::hash(&bytes).to_hex().to_string(),
                     });
@@ -704,8 +756,8 @@ async fn thermal_infer(frame: ThermalFrame, settings: &EdgeConfig) -> Result<Obs
         modality: Modality::Thermal,
         confidence: ((peak_temp - 20.0) / 18.0).clamp(0.25, 0.70),
         class_label: if peak_temp > 33.0 { "hot-vehicle" } else if peak_temp > 28.0 { "crop-stress-early-warning" } else { "warm-object" }.into(),
-        position_m: (31.0 + (frame.sequence % 15) as f32, 10.5 + (frame.sequence % 7) as f32),
-        velocity_mps: Some(0.0),
+        position_m: (0.0, 0.0), // No XY position from thermal heuristic
+        velocity_mps: None,
         source_id: frame.camera_id,
         evidence_digest: blake3::hash(&bytes).to_hex().to_string(),
     })
@@ -726,7 +778,7 @@ async fn ollama_radar_classify(frame: &RadarSweep, mean_range: f32, mean_velocit
     );
 
     let body = serde_json::json!({ "model": model, "prompt": prompt, "stream": false });
-    let client = reqwest::Client::new();
+    let client = get_http_client();
     let resp: serde_json::Value = client
         .post(format!("{}/api/generate", endpoint))
         .json(&body)

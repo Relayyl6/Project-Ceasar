@@ -3,6 +3,12 @@ set -euo pipefail
 
 REPO_DIR="${1:-/opt/uriel-caesar}"
 
+# Fail fast if the repository directory does not exist.
+if [[ ! -d "$REPO_DIR" ]]; then
+  echo "[bootstrap-hub] ERROR: REPO_DIR '$REPO_DIR' does not exist. Clone the repo first." >&2
+  exit 1
+fi
+
 echo "[bootstrap-hub] Updating apt cache"
 sudo apt-get update
 
@@ -14,8 +20,13 @@ sudo apt-get install -y \
   python3 \
   python3-pip \
   python3-venv \
+  mosquitto \
+  mosquitto-clients \
   git \
   curl
+
+echo "[bootstrap-hub] Enabling and starting mosquitto MQTT broker"
+sudo systemctl enable --now mosquitto
 
 if ! command -v rustup > /dev/null 2>&1; then
   echo "[bootstrap-hub] Installing Rust via rustup"
@@ -36,7 +47,7 @@ echo "[bootstrap-hub] Creating console Python environment"
 python3 -m venv "$REPO_DIR/.venv-console"
 source "$REPO_DIR/.venv-console/bin/activate"
 python -m pip install --upgrade pip
-python -m pip install paho-mqtt opencv-python pillow
+python -m pip install paho-mqtt opencv-python pillow requests
 
 mkdir -p "$REPO_DIR/output/caesar"
 

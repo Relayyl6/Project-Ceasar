@@ -77,6 +77,12 @@ impl SensorBus {
     }
 }
 
+impl Default for SensorBus {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub fn spawn_sources(settings: EdgeConfig, bus: SensorBus) -> Vec<JoinHandle<()>> {
     let mut handles = Vec::new();
 
@@ -258,13 +264,20 @@ where
     let program = program.context("sensor command program is required for command_json mode")?;
     let args = args.cloned().unwrap_or_default();
     let mut command = tokio::process::Command::new(program);
+    command.kill_on_drop(true);
     for arg in args {
         command.arg(arg.replace("{sequence}", &sequence.to_string()));
     }
-    let output = command
-        .output()
-        .await
-        .with_context(|| format!("failed to execute sensor command {}", program))?;
+    // F16 FIX: Apply a hard timeout so a hanging sensor adapter script cannot
+    // starve the sensor bus indefinitely. 10 seconds is generous for any
+    // real sensor adapter; reduce if your adapters are expected to respond faster.
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        command.output(),
+    )
+    .await
+    .with_context(|| format!("sensor command {} timed out after 10s", program))?
+    .with_context(|| format!("failed to execute sensor command {}", program))?;
 
     if !output.status.success() {
         bail!(

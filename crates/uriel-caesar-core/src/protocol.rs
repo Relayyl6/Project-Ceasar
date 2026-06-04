@@ -1,5 +1,20 @@
 use serde::{Deserialize, Serialize};
 
+/// Allowed threat_level values emitted by FusionEngine.
+pub const THREAT_LEVEL_HIGH: &str = "high-interest";
+pub const THREAT_LEVEL_MONITOR: &str = "monitor";
+
+/// All recognised threat_level values, in descending severity order.
+pub const THREAT_LEVEL_VALID_VALUES: &[&str] = &[THREAT_LEVEL_HIGH, THREAT_LEVEL_MONITOR];
+
+/// Returns `true` when `level` is one of the recognised threat_level values.
+///
+/// Use this when accepting threat_level from an external source to guard
+/// against arbitrary strings reaching downstream consumers.
+pub fn is_valid_threat_level(level: &str) -> bool {
+    THREAT_LEVEL_VALID_VALUES.contains(&level)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Modality {
@@ -56,6 +71,7 @@ pub struct FusedTrack {
     pub site: String,
     pub geo_latitude: f64,
     pub geo_longitude: f64,
+    /// Threat classification string.  Must be one of [`THREAT_LEVEL_VALID_VALUES`].
     pub threat_level: String,
     pub confidence: f32,
     pub position_m: (f32, f32),

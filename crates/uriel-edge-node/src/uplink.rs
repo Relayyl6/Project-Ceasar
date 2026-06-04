@@ -24,6 +24,10 @@ enum UplinkKind {
         // Simulated libp2p Gossipsub interface
         // In real deployment, this holds the swarm publisher
         topic: String,
+        /// F11 FIX: The specific serial port to use for radio uplink.
+        /// Must be explicitly set in config (uplink.serial_port).
+        /// None = no radio, stdout-only logging.
+        serial_port: Option<String>,
     },
 }
 
@@ -41,7 +45,9 @@ impl Uplink {
                     .context("uplink.file_path is required when mode=file")?;
                 let path = PathBuf::from(path);
                 if let Some(parent) = path.parent() {
-                    tokio::fs::create_dir_all(parent).await?;
+                    if !parent.as_os_str().is_empty() {
+                        tokio::fs::create_dir_all(parent).await?;
+                    }
                 }
                 let file = OpenOptions::new()
                     .create(true)
@@ -72,6 +78,7 @@ impl Uplink {
                 Ok(Self {
                     inner: UplinkKind::Gossipsub {
                         topic: settings.publish_topic.clone(),
+                        serial_port: settings.uplink.serial_port.clone(),
                     },
                 })
             }
@@ -93,27 +100,35 @@ impl Uplink {
             UplinkKind::TcpJsonl { writer, addr } => {
                 publish_tcp_jsonl(writer, addr, payload.as_bytes()).await?;
             }
-            UplinkKind::Gossipsub { topic } => {
+            UplinkKind::Gossipsub { topic, serial_port } => {
                 // Here libp2p Swarm::behaviour_mut().gossipsub.publish happens
                 println!("[edge.uplink.gossipsub] Broadcasting to topic {}: {}", topic, payload.trim_end());
-                
-                // Simulate RFD900x Baud Rate Management: UART baud rate must be strictly lower than air data rate
-                let mut hardware_active = false;
-                if let Ok(ports) = serialport::available_ports() {
-                    for p in ports {
-                        if let Ok(mut port) = serialport::new(&p.port_name, 57600).timeout(std::time::Duration::from_millis(100)).open() {
+
+                // F11 FIX: Only write to the explicitly configured serial_port.
+                // The previous code scanned ALL available serial ports and wrote
+                // signed envelopes to whichever one accepted the write first —
+                // this is uncontrolled data exfiltration to unknown peripherals.
+                // Operators must set uplink.serial_port in their TOML config;
+                // if it is absent, the uplink falls back to stdout only.
+                if let Some(port_name) = serial_port {
+                    match serialport::new(port_name, 57600)
+                        .timeout(std::time::Duration::from_millis(100))
+                        .open()
+                    {
+                        Ok(mut port) => {
                             if port.write_all(payload.as_bytes()).is_ok() {
-                                hardware_active = true;
-                                break;
+                                println!("[edge.uplink.rfd900x] Sent {} bytes via configured port {}", payload.len(), port_name);
+                            } else {
+                                eprintln!("[edge.uplink.rfd900x] Write failed on port {}", port_name);
                             }
                         }
+                        Err(e) => {
+                            eprintln!("[edge.uplink.rfd900x] Failed to open configured port '{}': {} — logging to stdout only", port_name, e);
+                            println!("[edge.uplink.gossipsub] (stdout fallback) {}", payload.trim_end());
+                        }
                     }
-                }
-
-                if hardware_active {
-                    println!("[edge.uplink.rfd900x] Enforced UART shaping to strictly match RFD900x air data constraints.");
                 } else {
-                    println!("[edge.uplink.rfd900x] Hardware UART missing. Falling back to stdout simulation.");
+                    println!("[edge.uplink.rfd900x] No serial_port configured \u2014 stdout only (set uplink.serial_port in TOML to enable radio).");
                 }
             }
         }
@@ -132,7 +147,13 @@ async fn publish_tcp_jsonl(
     }
 
     let write_result = if let Some(stream) = guard.as_mut() {
-        stream.write_all(payload).await.and_then(|_| stream.flush().await)
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            async {
+                stream.write_all(payload).await?;
+                stream.flush().await
+            }
+        ).await.unwrap_or_else(|_| Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "write timeout")))
     } else {
         unreachable!("tcp writer must be initialized before publish");
     };
@@ -143,15 +164,26 @@ async fn publish_tcp_jsonl(
 
     *guard = None;
     let mut stream = connect_writer(addr).await?;
-    stream.write_all(payload).await?;
-    stream.flush().await?;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        async {
+            stream.write_all(payload).await?;
+            stream.flush().await
+        }
+    ).await.unwrap_or_else(|_| Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "write timeout")))?;
     *guard = Some(stream);
     Ok(())
 }
 
 async fn connect_writer(addr: &str) -> Result<tokio::io::BufWriter<TcpStream>> {
-    let stream = TcpStream::connect(addr)
-        .await
-        .with_context(|| format!("failed to connect to hub at {}", addr))?;
+    // Apply a 10-second timeout so a black-hole route can't stall the uplink forever.
+    // Connection refused responds immediately; this only guards against silent drops.
+    let stream = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        TcpStream::connect(addr),
+    )
+    .await
+    .with_context(|| format!("connection to hub at {} timed out after 10s", addr))?
+    .with_context(|| format!("failed to connect to hub at {}", addr))?;
     Ok(tokio::io::BufWriter::new(stream))
 }
