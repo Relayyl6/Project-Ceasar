@@ -10,49 +10,49 @@
 ┌─────────────────────────────────────────────────────────────────────┐
 │  HARDWARE LAYER  (Raspberry Pi 5 / Jetson Orin / STM32 co-proc)     │
 │  CSI Camera · LD2450 Radar (UART) · MLX90640 Thermal (I2C)          │
-│  RTL-SDR (USB) · MEMS Mic (I2S/ALSA) · RFD900x LoRa Modem (UART)   │
+│  RTL-SDR (USB) · MEMS Mic (I2S/ALSA) · RFD900x LoRa Modem (UART)    │
 └──────────────────────────┬──────────────────────────────────────────┘
                            │  SensorBus (Tokio broadcast channels)
-┌──────────────────────────▼──────────────────────────────────────────┐
-│  URIEL EDGE NODE  (Rust · crates/uriel-edge-node)                   │
-│                                                                      │
-│  ┌─────────────────── SENTINEL MODE ─────────────────────────────┐  │
-│  │  OpenCV VideoCapture @ 24 fps                                  │  │
-│  │  BackgroundSubtractorMOG2  →  anomaly_score                   │  │
-│  │  6-frame rolling gate  →  TemporalAccumulator (ring buffer)   │  │
-│  │  score > 0.30: snapshot  │  score > 0.70: burst AI now        │  │
-│  │  8 snapshots + conf ≥ 0.87  →  AI + ActuatorBus dispatch      │  │
-│  │  Always: live JPEG → SentinelFeedEvent → dashboard channel    │  │
-│  │  Optional: MJPEG HTTP server on configured port               │  │
-│  └───────────────────────────────────────────────────────────────┘  │
-│                                                                      │
-│  ┌──────────────── STANDARD MODE (sentinel.enabled=false) ───────┐  │
-│  │  optical / thermal / radar SensorBus → inference workers      │  │
-│  └───────────────────────────────────────────────────────────────┘  │
-│                                                                      │
-│  AI Cascade: ONNX (ORT native) → Ollama VLM → Heuristic             │
-│  Pipelines:  YOLO-World · Gemini-ER · Seq2Seq LSTM · pxADMM         │
-│  Fusion:     Extended Kalman Filter · Z-score acoustic tracking      │
-│  Security:   ed25519 sign · Noise_XX session · blake3 digests        │
-│  Recon:      eBPF kprobes · USB fingerprint · ONVIF scan · SDR EW   │
-│  Actuators:  LogActuator · SerialActuator · GpioActuator · MqttActuator │
-└──────────────────────────┬──────────────────────────────────────────┘
+┌──────────────────────────▼─────────────────────────────────────────────┐
+│  URIEL EDGE NODE  (Rust · crates/uriel-edge-node)                      │
+│                                                                        │
+│  ┌─────────────────── SENTINEL MODE ─────────────────────────────┐     │
+│  │  OpenCV VideoCapture @ 24 fps                                 │     │
+│  │  BackgroundSubtractorMOG2  →  anomaly_score                   │     │
+│  │  6-frame rolling gate  →  TemporalAccumulator (ring buffer)   │     │
+│  │  score > 0.30: snapshot  │  score > 0.70: burst AI now        │     │
+│  │  8 snapshots + conf ≥ 0.87  →  AI + ActuatorBus dispatch      │     │
+│  │  Always: live JPEG → SentinelFeedEvent → dashboard channel    │     │
+│  │  Optional: MJPEG HTTP server on configured port               │     │
+│  └───────────────────────────────────────────────────────────────┘     │
+│                                                                        │
+│  ┌──────────────── STANDARD MODE (sentinel.enabled=false) ───────┐     │
+│  │  optical / thermal / radar SensorBus → inference workers      │     │
+│  └───────────────────────────────────────────────────────────────┘     │
+│                                                                        │
+│  AI Cascade: ONNX (ORT native) → Ollama VLM → Heuristic                │
+│  Pipelines:  YOLO-World · Gemini-ER · Seq2Seq LSTM · pxADMM            │
+│  Fusion:     Extended Kalman Filter · Z-score acoustic tracking        │
+│  Security:   ed25519 sign · Noise_XX session · blake3 digests          │
+│  Recon:      eBPF kprobes · USB fingerprint · ONVIF scan · SDR EW      │
+│  Actuators:  LogActuator · SerialActuator · GpioActuator · MqttActuator│
+└──────────────────────────┬─────────────────────────────────────────────┘
                            │  TCP JSONL / LoRa RFD900x / File / Gossipsub
-┌──────────────────────────▼──────────────────────────────────────────┐
-│  CAESAR HUB  (Rust · crates/caesar-hub)                             │
-│  TcpListener → ed25519 verify → HubStore persist                    │
-│  high-interest JSONL stream · trusted-key allowlist                 │
-└──────────────────────────┬──────────────────────────────────────────┘
+┌──────────────────────────▼─────────────────────────────────────────────┐
+│  CAESAR HUB  (Rust · crates/caesar-hub)                                │
+│  TcpListener → ed25519 verify → HubStore persist                       │
+│  high-interest JSONL stream · trusted-key allowlist                    │
+└──────────────────────────┬─────────────────────────────────────────────┘
                            │  output/caesar/ JSONL files
-┌──────────────────────────▼──────────────────────────────────────────┐
-│  CAESAR CONSOLE  (Python · services/caesar_console/server.py)       │
-│  REST API · SSE /api/live-events · MJPEG /api/camera-stream         │
-└──────────────────────────┬──────────────────────────────────────────┘
+┌──────────────────────────▼─────────────────────────────────────────────┐
+│  CAESAR CONSOLE  (Python · services/caesar_console/server.py)          │
+│  REST API · SSE /api/live-events · MJPEG /api/camera-stream            │
+└──────────────────────────┬─────────────────────────────────────────────┘
                            │  EventSource + fetch
-┌──────────────────────────▼──────────────────────────────────────────┐
-│  DASHBOARD  (index.html · app.js · ceasar-api.js)                   │
-│  Live map · Track log · YOLO feed · Anomaly stream · Camera         │
-└─────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────▼─────────────────────────────────────────────┐
+│  DASHBOARD  (index.html · app.js · ceasar-api.js)                      │
+│  Live map · Track log · YOLO feed · Anomaly stream · Camera            │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---

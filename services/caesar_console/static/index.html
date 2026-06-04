@@ -463,6 +463,28 @@
   <span class="ticker-enc">SEC_ENCRYPT: AES-512-V2</span>
 </footer>
 
+<!-- Camera Modal -->
+<div id="cameraModal" style="display:none; position:fixed; inset:0; z-index:3000; background:rgba(7,12,16,0.85); backdrop-filter:blur(8px); align-items:center; justify-content:center; padding:20px;">
+  <div style="width:100%; max-width:800px; background:var(--bg3); border:1px solid var(--cyan); box-shadow:0 0 30px rgba(0,212,255,0.25); display:flex; flex-direction:column;">
+    <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 16px; border-bottom:1px solid var(--border-solid); background:rgba(0,212,255,0.06);">
+      <div style="font-family:'Orbitron',sans-serif; font-size:0.9rem; font-weight:700; color:var(--cyan); text-transform:uppercase; display:flex; align-items:center; gap:8px;">
+        <span class="material-symbols-outlined">videocam</span>
+        <span id="modalNodeId">NODE STREAM</span>
+      </div>
+      <button onclick="window.closeCamera()" style="background:transparent; border:none; color:var(--text-dim); cursor:pointer; display:flex; align-items:center; justify-content:center; transition:0.15s;" onmouseover="this.style.color='var(--red)'" onmouseout="this.style.color='var(--text-dim)'">
+        <span class="material-symbols-outlined">close</span>
+      </button>
+    </div>
+    <div style="aspect-ratio:16/9; background:#000; position:relative; overflow:hidden;">
+      <img id="modalCamStream" src="" alt="Stream" style="width:100%; height:100%; object-fit:contain;" onerror="this.style.display='none'; document.getElementById('modalCamStreamFallback').style.display='flex';">
+      <div id="modalCamStreamFallback" style="position:absolute; inset:0; display:none; flex-direction:column; align-items:center; justify-content:center; color:var(--text-dim); gap:8px; font-family:'Share Tech Mono',monospace;">
+        <span class="material-symbols-outlined" style="font-size:32px;">videocam_off</span>
+        <span>Node Camera Stream Offline</span>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="/static/ceasar-api.js"></script>
 <script src="/static/app.js"></script>

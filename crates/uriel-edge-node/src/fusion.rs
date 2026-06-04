@@ -59,28 +59,27 @@ impl FusionEngine {
                 maybe_observation = self.rx.recv() => {
                     match maybe_observation {
                         Some(obs) => {
-                            // SCLE (Structured Case-Level Examination) Isolation Boundary
-                            // Ensures single corrupted observations don't cascade and crash the main loop
-                            if std::panic::catch_unwind(|| {
-                                // Simulate memory check bounds
-                                obs.confidence.is_finite()
-                            }).unwrap_or(false) {
+                            // Guard against non-finite confidence values that would
+                            // corrupt EKF state or produce NaN threat levels downstream.
+                            if obs.confidence.is_finite() {
                                 buckets.entry(obs.track_hint.clone()).or_default().push(obs);
                             } else {
-                                println!("[edge.fusion.scle] Fault isolated: rejected corrupted observation payload");
+                                eprintln!(
+                                    "[edge.fusion] Rejected observation with non-finite confidence \
+                                     from source '{}' (value={}). Possible sensor/inference bug.",
+                                    obs.source_id, obs.confidence
+                                );
                             }
                         },
                         None => break,
                     }
                 }
                 _ = ticker.tick() => {
-                    // SCLE Isolation Boundary for fusion flush
-                    let tracks = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        self.flush_ready(&mut buckets, &mut last_frame_time, &mut acoustic_buffer)
-                    })).unwrap_or_else(|_| {
-                        println!("[edge.fusion.scle] Fault isolated during flush_ready; preserving engine loop.");
-                        Vec::new()
-                    });
+                    let tracks = self.flush_ready(
+                        &mut buckets,
+                        &mut last_frame_time,
+                        &mut acoustic_buffer,
+                    );
 
                     for track in tracks {
                         if self.tx.send(track).await.is_err() {

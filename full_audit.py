@@ -183,6 +183,6 @@ if errors:
     print(f'  ({len(errors)} failures)\n')
     print('  FAILURES:')
     for e in errors:
-        print(f'    ✗ {e}')
+        print(f'    [X] {e}')
 else:
     print('  — ALL CLEAR\n')

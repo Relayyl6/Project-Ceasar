@@ -123,12 +123,18 @@ pub struct PhysicalThermalSensor {
 impl CaesarSensor for PhysicalThermalSensor {
     fn read_data(&self) -> Result<Vec<u8>> {
         if let Ok(mut i2c) = rppal::i2c::I2c::with_bus(self.i2c_bus) {
-            let mut buffer = vec![0u8; 640 * 512 * 2]; // 16-bit radiometric
+            // C6 FIX: Cap the I2C read to a safe per-transfer size.
+            // A real FLIR Boson+ 640 delivers frames via USB/UART, not raw I2C bulk reads.
+            // For MLX90640 (32×24 = 768 pixels, 2 bytes each = 1536 bytes per frame)
+            // we cap at 2KB to avoid OOM on Pi 3. Full-frame streaming requires
+            // multiple read calls or a dedicated driver (mlx9064x kernel module).
+            const MAX_I2C_READ: usize = 2048;
+            let mut buffer = vec![0u8; MAX_I2C_READ];
             if i2c.read(&mut buffer).is_ok() {
                 return Ok(buffer);
             }
         }
-        Ok(vec![0; 640 * 512 * 2])
+        Ok(vec![0; 1536]) // MLX90640 frame size fallback
     }
     fn get_status(&self) -> String {
         format!("{}-Thermal-Active", self.id)
@@ -168,7 +174,7 @@ impl CaesarSensor for PhysicalAcousticSensor {
                 }
             }
         }
-        eprintln!("[caesar.hal] WARNING: PhysicalAcousticSensor failed to read from cpal, using fallback");
+        eprintln!("[caesar.hal] WARNING: PhysicalAcousticSensor failed to read from default cpal device. Attempting ALSA hw:0,0 fallback or silence.");
         Ok(vec![127; 1024])
     }
     fn get_status(&self) -> String {

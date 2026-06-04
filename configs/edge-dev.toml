@@ -3,7 +3,11 @@ publish_topic    = "caesar_tactical_intel"
 loop_count       = 0
 fusion_window_ms = 600
 threat_threshold = 0.72
-ed25519_seed_hex = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+# SECURITY: No manual key management needed.
+# On first boot this node auto-generates a unique Ed25519 keypair using OS entropy
+# and writes it to key_file (created with permissions 0600 on Linux).
+# Copy the logged public key fingerprint into hub-dev.toml trusted_public_keys.
+key_file         = "./keys/tower-bwari-alpha-dev.key"
 recon_enabled    = true
 # Project Caesar deployment domain: "agricultural" | "industrial" | "tactical" | "general"
 # Controls Ollama prompt style, actuator action mapping, and dashboard log prefixes.
@@ -44,7 +48,7 @@ frame_interval_ms = 325
 
 [inference]
 # ort_native: tries ONNX first, falls back to Ollama VLM, then heuristic
-mode             = "ort_native"
+mode = "ort_native"
 model_yolo_world = "models/yolo_world_v2_s.onnx"
 model_gemini_er  = "models/gemini_robotics_er_1_6.onnx"
 model_seq2seq    = "models/seq2seq_thermal_lstm.onnx"

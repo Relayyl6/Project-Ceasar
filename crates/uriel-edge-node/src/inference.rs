@@ -309,27 +309,42 @@ async fn optical_infer(settings: &EdgeConfig, frame: OpticalFrame) -> Result<Obs
     match settings.inference.mode.as_str() {
         "heuristic" => heuristic_optical_infer(frame),
         "command_json" => command_optical_infer(settings, frame).await,
+        // --- Pi 3 remote offload mode ---
+        // Sends the JPEG to a hub PC running services/remote_infer_server.py.
+        // The server runs full Ollama VLM + heuristic fallback and returns
+        // an Observation JSON. Zero heavy model weight on the Pi 3 itself.
+        "remote_http" => remote_http_infer(settings, frame).await,
         "ort_native" | "hybrid" | "ollama_vision" => {
             // 1. PRINCIPAL: Try ONNX natively in Rust
             let mut onnx_success = false;
             let mut observation_result = Err(anyhow::anyhow!("ONNX initialization failed"));
 
-            if let Some(gemini_path) = &settings.inference.model_gemini_er {
-                if let Ok(pipeline) = GeminiRoboticsERPipeline::new(gemini_path) {
-                    if let Ok(obs) = pipeline.evaluate_embodied_reasoning(&frame, settings) {
-                        onnx_success = true;
-                        observation_result = Ok(obs);
+            let settings_clone = settings.clone();
+            let frame_clone = frame.clone();
+            let (onnx_success_res, observation_result_res) = tokio::task::spawn_blocking(move || {
+                let mut success = false;
+                let mut res = Err(anyhow::anyhow!("ONNX initialization failed"));
+                if let Some(gemini_path) = &settings_clone.inference.model_gemini_er {
+                    if let Ok(pipeline) = GeminiRoboticsERPipeline::new(gemini_path) {
+                        if let Ok(obs) = pipeline.evaluate_embodied_reasoning(&frame_clone, &settings_clone) {
+                            success = true;
+                            res = Ok(obs);
+                        }
+                    }
+                } else {
+                    let model_path = settings_clone.inference.model_yolo_world.as_deref().unwrap_or("models/yolov8n.onnx");
+                    if let Ok(pipeline) = OrtYoloPipeline::new(model_path, 0.5) {
+                        if let Ok(obs) = pipeline.infer_yolo_world(&frame_clone, &settings_clone) {
+                            success = true;
+                            res = Ok(obs);
+                        }
                     }
                 }
-            } else {
-                let model_path = settings.inference.model_yolo_world.as_deref().unwrap_or("models/yolov8n.onnx");
-                if let Ok(pipeline) = OrtYoloPipeline::new(model_path, 0.5) {
-                    if let Ok(obs) = pipeline.infer_yolo_world(&frame, settings) {
-                        onnx_success = true;
-                        observation_result = Ok(obs);
-                    }
-                }
-            }
+                (success, res)
+            }).await.unwrap_or((false, Err(anyhow::anyhow!("spawn_blocking failed"))));
+            
+            onnx_success = onnx_success_res;
+            observation_result = observation_result_res;
 
             if onnx_success {
                 return observation_result;
@@ -348,6 +363,86 @@ async fn optical_infer(settings: &EdgeConfig, frame: OpticalFrame) -> Result<Obs
         other => bail!("unsupported inference mode {:?}", other),
     }
 }
+
+/// Remote HTTP inference — used when running on Pi 3 (mode = "remote_http").
+///
+/// POSTs the JPEG frame as base64 JSON to the hub PC's remote_infer_server.py
+/// running on port 9090. The server runs the full Ollama VLM pipeline and
+/// returns an Observation JSON. If the hub is unreachable for any reason
+/// (network outage, server down), automatically falls back to the local
+/// heuristic so the Pi 3 continues operating autonomously offline.
+async fn remote_http_infer(settings: &EdgeConfig, frame: OpticalFrame) -> Result<Observation> {
+    // Reuse ollama_endpoint as the remote server URL, e.g. "http://10.163.194.96:9090"
+    let server_url = settings
+        .inference
+        .ollama_endpoint
+        .as_deref()
+        .unwrap_or("http://10.163.194.96:9090");
+
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    let jpeg_b64 = STANDARD.encode(&frame.jpeg_bytes);
+
+    let body = serde_json::json!({
+        "jpeg_b64":    jpeg_b64,
+        "node_id":     settings.node_id,
+        "domain":      settings.domain,
+        "sequence":    frame.sequence,
+        "timestamp_ms": frame.timestamp_ms,
+        "camera_id":   frame.camera_id,
+    });
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+
+    let resp_result = client
+        .post(format!("{}/infer", server_url))
+        .json(&body)
+        .send()
+        .await;
+
+    match resp_result {
+        Ok(resp) => {
+            match resp.json::<RemoteInferResponse>().await {
+                Ok(r) => {
+                    println!(
+                        "[caesar.{domain}][remote_http] Inference OK — class='{class}' conf={conf:.2} stage={stage}",
+                        domain = settings.domain,
+                        class  = r.class_label,
+                        conf   = r.confidence,
+                        stage  = r.inference_stage.as_deref().unwrap_or("remote"),
+                    );
+                    Ok(Observation {
+                        track_hint:       r.track_hint,
+                        timestamp_ms:     frame.timestamp_ms,
+                        modality:         Modality::Optical,
+                        confidence:       r.confidence,
+                        class_label:      r.class_label,
+                        position_m:       (r.position_m[0], r.position_m.get(1).copied().unwrap_or(0.0)),
+                        velocity_mps:     r.velocity_mps,
+                        source_id:        frame.camera_id,
+                        evidence_digest:  r.evidence_digest,
+                    })
+                }
+                Err(e) => {
+                    eprintln!("[caesar.{}.remote_http] Failed to parse hub response: {}. Using heuristic.", settings.domain, e);
+                    heuristic_optical_infer(frame)
+                }
+            }
+        }
+        Err(e) => {
+            // Hub unreachable — Pi 3 falls back to local heuristic automatically
+            eprintln!(
+                "[caesar.{}.remote_http] Hub unreachable ({}): {}. Autonomous heuristic engaged.",
+                settings.domain, server_url, e
+            );
+            heuristic_optical_infer(frame)
+        }
+    }
+}
+
+
 
 async fn ollama_vision_infer(settings: &EdgeConfig, frame: OpticalFrame) -> Result<Observation> {
     let endpoint = settings.inference.ollama_endpoint.as_deref().unwrap_or("http://localhost:11434");
@@ -765,3 +860,19 @@ struct DetectorCommandResponse {
     velocity_mps: Option<f32>,
     evidence_digest: Option<String>,
 }
+
+/// Response body returned by services/remote_infer_server.py running on the hub PC.
+/// position_m is a JSON array [x, y] (the Python server produces a list, not a tuple).
+#[derive(Debug, Deserialize)]
+struct RemoteInferResponse {
+    track_hint: String,
+    confidence: f32,
+    class_label: String,
+    /// JSON array [x, y] — use .get(0)/.get(1) for access
+    position_m: Vec<f32>,
+    velocity_mps: Option<f32>,
+    evidence_digest: String,
+    /// Which inference stage produced this result: "ollama" | "heuristic"
+    inference_stage: Option<String>,
+}
+

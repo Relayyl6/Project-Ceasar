@@ -1,0 +1,142 @@
+# Project Caesar — Raspberry Pi 3 Node Configuration
+# Hub PC IP: 10.163.194.96
+#
+# This profile runs the FULL Caesar feature set on a Raspberry Pi 3 (1GB RAM)
+# by offloading optical AI inference to the hub PC.
+#
+# What runs ON the Pi 3:
+#   - Camera CSI capture (rpicam-jpeg)
+#   - Thermal I2C sensor (MLX90640 via thermal_adapter.py)
+#   - Radar UART sensor (LD2450 via radar_adapter.py)
+#   - EKF sensor fusion engine
+#   - GPIO relay, UART serial, MQTT, and webhook actuators
+#   - Passive recon (PCAP, SDR, eBPF, ONVIF, USB discovery)
+#   - Ed25519 signing + TCP uplink to hub
+#
+# What runs ON the hub PC (10.163.194.96):
+#   - services/remote_infer_server.py (port 9090) — runs Ollama VLM on optical frames
+#   - Ollama llava model (port 11434) — thermal/radar text fallback
+#   - caesar-hub binary (port 7878) — receives signed observation envelopes
+#   - caesar_console/server.py (port 8090) — tactical dashboard
+
+node_id          = "tower-bwari-pi3"
+publish_topic    = "caesar_tactical_intel"
+loop_count       = 0
+fusion_window_ms = 700
+threat_threshold = 0.75
+# SECURITY: No manual key management needed.
+# On first boot this node auto-generates a unique Ed25519 keypair using OS entropy
+# and writes it to the path below (created with permissions 0600 on Linux).
+# Copy the logged public key fingerprint into hub-dev.toml trusted_public_keys.
+key_file         = "/etc/caesar/tower-bwari-pi3.key"
+recon_enabled    = true
+domain           = "tactical"
+
+[location]
+site      = "Bwari"
+latitude  = 9.2797
+longitude = 7.3781
+
+[uplink]
+# Stream signed observation envelopes to the hub PC over TCP
+mode     = "tcp_jsonl"
+tcp_addr = "10.163.194.96:7878"
+# Uncomment to use RFD900x radio uplink instead of Wi-Fi:
+# mode = "uart"
+# uart_port = "/dev/ttyUSB0"
+# baud_rate = 57600
+
+[optical]
+enabled           = true
+# profile_stdout calls rpicam-jpeg (libcamera) — native Pi CSI pipeline
+mode              = "profile_stdout"
+profile           = "rpi_csi_jpeg"
+camera_id         = "pi3-cam-front"
+width             = 640
+height            = 480
+# 1fps for inference to minimise upload bandwidth over Wi-Fi
+frame_interval_ms = 1000
+csi_port          = 0
+
+[thermal]
+enabled           = true
+mode              = "command_json"
+camera_id         = "thermal-front"
+width             = 32
+height            = 24
+frame_interval_ms = 600
+command_program   = "python3"
+command_args      = ["scripts/thermal_adapter.py", "--mode", "hardware", "--bus", "1", "--address", "0x33"]
+i2c_address       = "0x33"
+
+[radar]
+enabled           = true
+mode              = "command_json"
+radar_id          = "mmwave-front"
+point_count       = 64
+frame_interval_ms = 550
+command_program   = "python3"
+command_args      = ["scripts/radar_adapter.py", "--mode", "hardware", "--port", "/dev/ttyAMA0", "--baud", "256000"]
+uart_data_port    = "/dev/ttyAMA0"
+
+[inference]
+# remote_http: optical JPEG frames are POST'd to the hub PC's remote_infer_server.py.
+# The hub runs full Ollama VLM vision inference and returns Observation JSON.
+# If the hub is unreachable, the Pi 3 automatically falls back to local heuristic.
+# This mode loads ZERO model weights on the Pi 3 — RAM stays under 50MB.
+mode             = "remote_http"
+
+# URL of services/remote_infer_server.py on the hub PC (port 9090)
+# This is reused as the remote inference server URL in remote_http mode.
+ollama_endpoint  = "http://10.163.194.96:9090"
+
+# Model used by the hub's Ollama for thermal/radar text-prompt fallback
+# (thermal_infer and radar_infer call ollama_endpoint/api/generate directly)
+ollama_model     = "llava"
+
+# Vocabulary passed to YOLO-World on the hub (for future ort_native mode)
+vocabulary = [
+  "human intruder", "armed person", "civilian drone", "military drone",
+  "tractor", "truck", "motorcycle", "car", "animal",
+  "fire", "smoke", "explosion", "weapon", "backpack",
+  "person running", "person crouching", "crowd", "vehicle convoy"
+]
+
+[sentinel]
+# OpenCV Sentinel requires libopencv — disabled on Pi 3 to save RAM.
+# The standard optical worker runs instead (spawned via spawn_optical_worker).
+enabled = false
+
+# ---------------------------------------------------------------------------
+# Actuators — configure for your physical hardware wired to the Pi 3's GPIO/UART
+# ---------------------------------------------------------------------------
+
+# Example: GPIO relay on pin 17 (lock/alarm relay)
+# [[actuators]]
+# id             = "perimeter-relay"
+# actuator_type  = "gpio"
+# gpio_pin       = 17
+# capabilities   = ["lock_perimeter", "alert"]
+
+# Example: UART serial relay (Arduino MCU)
+# [[actuators]]
+# id             = "mcu-controller"
+# actuator_type  = "serial"
+# serial_port    = "/dev/ttyUSB0"
+# baud_rate      = 9600
+# capabilities   = ["lock_perimeter", "alert", "increase_flow"]
+
+# Example: MQTT actuator (smart home / IoT)
+# [[actuators]]
+# id             = "iot-hub"
+# actuator_type  = "mqtt"
+# mqtt_topic     = "caesar/actions"
+# mqtt_broker    = "10.163.194.96:1883"
+# capabilities   = ["alert", "lock_perimeter"]
+
+# Example: HTTP webhook (Telegram bot alert, PagerDuty, Home Assistant, etc.)
+# [[actuators]]
+# id             = "webhook-alert"
+# actuator_type  = "webhook"
+# webhook_url    = "http://10.163.194.96:8080/caesar-alert"
+# capabilities   = ["alert", "lock_perimeter", "maintenance_alert"]

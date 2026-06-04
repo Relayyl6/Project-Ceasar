@@ -16,25 +16,43 @@ sudo apt-get install -y \
   python3-venv \
   git \
   curl \
-  ffmpeg
+  ffmpeg \
+  python3-smbus \
+  i2c-tools \
+  rpicam-apps
 
-if ! command -v rustup >/dev/null 2>&1; then
+if ! command -v rustup > /dev/null 2>&1; then
   echo "[bootstrap-edge] Installing Rust via rustup"
   curl https://sh.rustup.rs -sSf | sh -s -- -y
 fi
 
 source "$HOME/.cargo/env"
 
-echo "[bootstrap-edge] Creating Python environment"
+echo "[bootstrap-edge] Creating Python environment for sensor adapters"
 python3 -m venv "$REPO_DIR/.venv-edge"
 source "$REPO_DIR/.venv-edge/bin/activate"
 python -m pip install --upgrade pip
 python -m pip install -r "$REPO_DIR/requirements-edge.txt"
-python -m pip install pynacl ultralytics onnx
+# Sensor hardware libraries (Pi-specific)
+python -m pip install pyserial smbus2 pynacl
 
-echo "[bootstrap-edge] Edge prerequisites installed"
-echo "[bootstrap-edge] Next manual actions:"
-echo "  1. Connect the Raspberry Pi camera ribbon or USB/V4L2 camera"
-echo "  2. Copy/export your ONNX model into $REPO_DIR/models/"
-echo "  3. Edit configs/edge-pi.toml or configs/edge-v4l2.toml"
-echo "  4. Run: cargo run -p uriel-edge-node -- --config configs/edge-pi.toml"
+echo ""
+echo "[bootstrap-edge] === Pi 3 Edge Node Setup Complete ==="
+echo ""
+echo "  IMPORTANT: Edit configs/edge-pi3.toml before launching."
+echo "  Set the hub PC's IP address in two places:"
+echo "    [uplink]   tcp_addr    = \"<HUB_IP>:7878\""
+echo "    [inference] ollama_endpoint = \"http://<HUB_IP>:9090\""
+echo ""
+echo "  The hub PC must be running:"
+echo "    - cargo run -p caesar-hub -- --config configs/hub-dev.toml serve"
+echo "    - python services/remote_infer_server.py --port 9090"
+echo "    - python services/caesar_console/server.py --port 8090"
+echo ""
+echo "  Then launch the edge node:"
+echo "    cargo build --release -p uriel-edge-node"
+echo "    ./target/release/uriel-edge-node --config configs/edge-pi3.toml"
+echo ""
+echo "  NOTE: No ONNX models are needed on the Pi 3."
+echo "        Inference is offloaded to the hub PC via remote_http mode."
+echo "        If the hub is unreachable, the Pi 3 falls back to local heuristic automatically."

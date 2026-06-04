@@ -19,7 +19,7 @@ use sensors::{spawn_sources, SensorBus};
 use tokio::sync::{broadcast, mpsc};
 use uplink::Uplink;
 use uriel_caesar_core::{
-    crypto::EnvelopeSigner,
+    crypto::NodeIdentity,
     io::read_toml,
     protocol::{FusedTrack, Observation},
 };
@@ -44,7 +44,19 @@ async fn main() -> Result<()> {
         settings.node_id, settings.location.site, settings.domain, settings.uplink.mode
     );
 
-    let signer = EnvelopeSigner::from_seed_hex(&settings.ed25519_seed_hex)?;
+    // ── Node Identity ──────────────────────────────────────────────────────────
+    // Load the persistent Ed25519 keypair from the key file, or generate one
+    // on first boot using OS-provided entropy (OsRng). No manual key management
+    // is required. If the config still has a legacy ed25519_seed_hex it is used
+    // once to populate the key file, then can be removed from the TOML.
+    let identity = NodeIdentity::load_or_generate(
+        &settings.key_file,
+        settings.ed25519_seed_hex.as_deref(),
+        &settings.node_id,
+    )?;
+    let signer = identity.into_signer();
+    // ──────────────────────────────────────────────────────────────────────────
+
     let uplink = Uplink::from_config(&settings).await?;
 
     let sensor_bus = SensorBus::new();
@@ -62,6 +74,94 @@ async fn main() -> Result<()> {
         settings.sentinel.autonomous_confidence,
         settings.sentinel.min_snapshots,
     ));
+
+    // --- Bidirectional MQTT Command Subscriber ---
+    // C3 FIX: Resolve broker address from config instead of hardcoding localhost:1883.
+    // Priority: (1) first mqtt-type actuator's mqtt_broker field, (2) host extracted
+    // from uplink.tcp_addr (hub PC is usually running the broker too), (3) localhost:1883.
+    let mqtt_broker_addr: String = settings
+        .actuators
+        .iter()
+        .find(|a| a.actuator_type == "mqtt")
+        .and_then(|a| a.mqtt_broker.clone())
+        .or_else(|| {
+            // Derive broker host from the uplink tcp_addr, keep port 1883
+            settings
+                .uplink
+                .tcp_addr
+                .as_deref()
+                .and_then(|addr| addr.split(':').next())
+                .map(|host| format!("{}:1883", host))
+        })
+        .unwrap_or_else(|| "localhost:1883".to_string());
+
+    let (mqtt_broker_host, mqtt_broker_port) = {
+        let mut parts = mqtt_broker_addr.rsplitn(2, ':');
+        let port: u16 = parts
+            .next()
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(1883);
+        let host = parts.next().unwrap_or("localhost").to_string();
+        (host, port)
+    };
+
+    println!(
+        "[caesar.command] MQTT broker resolved to {}:{} (from config)",
+        mqtt_broker_host, mqtt_broker_port
+    );
+
+    let node_id_cmd = settings.node_id.clone();
+    let actuator_bus_cmd = Arc::clone(&actuator_bus);
+
+    tokio::spawn(async move {
+        use rumqttc::{MqttOptions, AsyncClient, QoS, Event, Incoming};
+        let mut mqttoptions = MqttOptions::new(
+            format!("{}-sub", node_id_cmd),
+            mqtt_broker_host,
+            mqtt_broker_port,
+        );
+        mqttoptions.set_keep_alive(std::time::Duration::from_secs(5));
+
+        let (client, mut eventloop) = AsyncClient::new(mqttoptions, 10);
+        let topic = format!("caesar/commands/{}", node_id_cmd);
+
+        // Wait briefly for broker to be ready if it's co-located on this node
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        if client.subscribe(&topic, QoS::AtMostOnce).await.is_ok() {
+            println!("[caesar.command] Listening for remote dashboard commands on topic: {}", topic);
+
+            loop {
+                match eventloop.poll().await {
+                    Ok(Event::Incoming(Incoming::Publish(p))) => {
+                        if let Ok(payload) = String::from_utf8(p.payload.to_vec()) {
+                            if let Ok(cmd) = serde_json::from_str::<crate::actuator::ActuatorCommand>(&payload) {
+                                println!("[caesar.command] Received remote command: {:?}", cmd);
+                                let _ = actuator_bus_cmd.dispatch(cmd);
+                            } else {
+                                eprintln!("[caesar.command] Failed to parse command: {}", payload);
+                            }
+                        }
+                    }
+                    Ok(_) => {} // Ignore non-Publish events (PingResp, SubAck, etc.)
+                    Err(rumqttc::ConnectionError::Io(ref io_err))
+                        if io_err.kind() == std::io::ErrorKind::ConnectionRefused
+                            || io_err.kind() == std::io::ErrorKind::TimedOut =>
+                    {
+                        // Broker not yet available — silently retry
+                        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                    }
+                    Err(e) => {
+                        eprintln!("[caesar.command] MQTT connection error: {:?}. Retrying in 10s.", e);
+                        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                    }
+                }
+            }
+        } else {
+            eprintln!("[caesar.command] Failed to subscribe to MQTT topic: {}", topic);
+        }
+    });
+    // ---------------------------------------------
 
     let _sensor_tasks = spawn_sources(settings.clone(), sensor_bus.clone());
 

@@ -14,6 +14,7 @@ def _ensure(pkg: str, import_name: str | None = None) -> None:
 
 _ensure("opencv-python", "cv2")
 _ensure("pillow",        "PIL")
+_ensure("paho-mqtt",     "paho.mqtt.client")
 # ──────────────────────────────────────────────────────────────────────────────
 
 import argparse
@@ -37,18 +38,28 @@ _camera_node_id = "local"
 _anomaly_log = []           # recent detection strings
 
 def _init_camera():
-    """Try to open a real webcam via OpenCV. Falls back to synthetic frames."""
+    """Try to open a real webcam via OpenCV. Auto-scans devices, falls back to synthetic frames."""
     global _camera_cap
     try:
         import cv2
-        cap = cv2.VideoCapture(0)  # device 0 = default webcam
+        import glob
+        target_dev = 0
+        devices = glob.glob("/dev/video*")
+        if devices:
+            try:
+                devices.sort(key=lambda x: int(x.replace("/dev/video", "")))
+                target_dev = int(devices[0].replace("/dev/video", ""))
+            except ValueError:
+                pass
+        
+        cap = cv2.VideoCapture(target_dev)
         if cap.isOpened():
             _camera_cap = cap
-            print("[camera] Hardware webcam opened on device 0.")
+            print(f"[camera] Hardware webcam opened on device {target_dev}.")
         else:
-            print("[camera] No webcam found at device 0. Using synthetic frames.")
+            print(f"[camera] No webcam found at device {target_dev}. Using synthetic frames.")
     except ImportError:
-        print("[camera] opencv-python not installed. Using synthetic frames. (pip install opencv-python)")
+        print("[camera] opencv-python not installed. Using synthetic frames.")
 
 def _synthetic_jpeg(width=640, height=480, label="URIEL OPTICAL FEED"):
     """
@@ -145,6 +156,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--activity-window-seconds", type=int, default=900)
     parser.add_argument("--journal-scan-limit", type=int, default=2000)
     parser.add_argument("--high-interest-scan-limit", type=int, default=2000)
+    # C5 FIX: Configurable MQTT broker so dashboard commands reach the correct node
+    parser.add_argument("--mqtt-broker", default="localhost",
+                        help="MQTT broker hostname for actuator dispatch (default: localhost)")
+    parser.add_argument("--mqtt-broker-port", type=int, default=1883,
+                        help="MQTT broker port (default: 1883)")
     return parser.parse_args()
 
 
@@ -161,6 +177,8 @@ class CaesarConsoleHandler(BaseHTTPRequestHandler):
     activity_window_seconds: int
     journal_scan_limit: int
     high_interest_scan_limit: int
+    mqtt_broker_host: str   # C5: broker host read from --mqtt-broker, not hardcoded
+    mqtt_broker_port: int   #     avoids always sending commands to localhost
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -255,6 +273,7 @@ class CaesarConsoleHandler(BaseHTTPRequestHandler):
             self.send_header("X-Accel-Buffering", "no")
             self.end_headers()
             try:
+                ticks = 0
                 while True:
                     stats = build_stats(
                         read_latest(self.latest_path),
@@ -267,6 +286,12 @@ class CaesarConsoleHandler(BaseHTTPRequestHandler):
                     latest = read_latest(self.latest_path)
                     payload = json.dumps({"stats": stats, "latest": latest})
                     self.wfile.write(f"data: {payload}\r\n\r\n".encode())
+                    
+                    ticks += 1
+                    if ticks % 7 == 0:
+                        # 14-second heartbeat to prevent proxy dead-drops
+                        self.wfile.write(b": ping\n\n")
+                        
                     self.wfile.flush()
                     time.sleep(2.0)
             except (BrokenPipeError, ConnectionResetError, OSError):
@@ -282,6 +307,40 @@ class CaesarConsoleHandler(BaseHTTPRequestHandler):
         if parsed.path.startswith("/static/"):
             return self.serve_static(parsed.path.removeprefix("/static/"))
 
+        self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+
+
+    def do_POST(self) -> None:
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/actuate":
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length)
+            try:
+                command = json.loads(post_data)
+                node_id = command.get("node_id", "unknown")
+                print(f"[caesar.hub.actuate] Dispatching command to {node_id}: {command}")
+                
+                # C5 FIX: Use the configured broker host/port instead of hardcoded "localhost".
+                try:
+                    import paho.mqtt.publish as mqtt_publish
+                    mqtt_publish.single(
+                        f"caesar/commands/{node_id}",
+                        payload=json.dumps(command),
+                        hostname=self.mqtt_broker_host,
+                        port=self.mqtt_broker_port,
+                    )
+                except Exception as e:
+                    print(f"[caesar.hub.actuate] MQTT publish failed (broker={self.mqtt_broker_host}:{self.mqtt_broker_port}): {e}")
+
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps({"status": "dispatched", "command": command}).encode())
+            except Exception as e:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(e))
+            return
+            
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
     def serve_static(self, relative_path: str) -> None:
@@ -451,6 +510,8 @@ def main() -> int:
     handler.activity_window_seconds = args.activity_window_seconds
     handler.journal_scan_limit = args.journal_scan_limit
     handler.high_interest_scan_limit = args.high_interest_scan_limit
+    handler.mqtt_broker_host = args.mqtt_broker
+    handler.mqtt_broker_port = args.mqtt_broker_port
 
     server = ThreadingHTTPServer((args.host, args.port), handler)
     print(f"Caesar console listening on http://{args.host}:{args.port}")

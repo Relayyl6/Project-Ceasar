@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use anyhow::{Context, Result};
 use base64::Engine;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
@@ -22,12 +24,164 @@ impl NoiseSession {
     }
 }
 
+// ── Node Identity ─────────────────────────────────────────────────────────────
+//
+// The node identity is a persistent Ed25519 keypair that survives reboots and
+// proves the authenticity of every SignedEnvelope emitted by this node.
+//
+// Key lifecycle:
+//   1. First boot — generate a fresh OS-random 32-byte seed via OsRng, derive
+//      the keypair, write the seed hex to `key_file` with mode 0600 (Linux:
+//      owner-read-only), and log the public key fingerprint so operators can
+//      add it to the hub's trusted_public_keys list.
+//   2. Subsequent boots — load the existing seed from the key file; the identity
+//      is stable across reboots without any config change.
+//   3. Legacy migration — if the TOML still has an explicit `ed25519_seed_hex`,
+//      it is used for this boot AND immediately written to the key file so that
+//      future boots use the file and the config entry can be removed.
+//
+// The config field `ed25519_seed_hex` is now `Option<String>`.
+// Omitting it entirely is the correct long-term posture.
+//
+pub struct NodeIdentity {
+    pub signing_key: SigningKey,
+    pub verifying_key: VerifyingKey,
+    /// Hex-encoded public key — what the hub's trusted_public_keys list needs.
+    pub public_key_hex: String,
+    /// Where the seed file lives on disk.
+    pub key_file_path: std::path::PathBuf,
+}
+
+impl NodeIdentity {
+    /// Load an existing identity from `key_file`, or generate a new one and
+    /// save it there.
+    ///
+    /// - If `key_file` exists → load it (normal boot).
+    /// - If `key_file` does not exist and `legacy_seed_hex` is `Some` → write
+    ///   the legacy seed to the file (one-time migration).
+    /// - If `key_file` does not exist and `legacy_seed_hex` is `None` → generate
+    ///   a fresh OS-random key and write it (first-ever boot).
+    pub fn load_or_generate(
+        key_file: impl AsRef<Path>,
+        legacy_seed_hex: Option<&str>,
+        node_id: &str,
+    ) -> Result<Self> {
+        let key_file = key_file.as_ref();
+
+        let seed: [u8; 32] = if key_file.exists() {
+            // ── Normal boot: load persisted seed ──────────────────────────────
+            let raw = std::fs::read_to_string(key_file)
+                .with_context(|| format!(
+                    "failed to read identity key file '{}'", key_file.display()
+                ))?;
+            let bytes = hex::decode(raw.trim())
+                .with_context(|| format!(
+                    "identity key file '{}' contains invalid hex", key_file.display()
+                ))?;
+            bytes.try_into().map_err(|_| anyhow::anyhow!(
+                "identity key file '{}' must contain exactly 64 hex chars (32 bytes)",
+                key_file.display()
+            ))?
+        } else {
+            // ── First boot ────────────────────────────────────────────────────
+            let seed = if let Some(hex_str) = legacy_seed_hex.filter(|s| !s.is_empty()) {
+                // Legacy migration path: the config supplies an explicit seed.
+                let bytes = hex::decode(hex_str)
+                    .context("ed25519_seed_hex in config is not valid hex")?;
+                let arr: [u8; 32] = bytes.try_into().map_err(|_| anyhow::anyhow!(
+                    "ed25519_seed_hex must be 64 hex chars (32 bytes)"
+                ))?;
+                println!(
+                    "[caesar.identity] Migrating legacy config seed to key file '{}'.\n\
+                     └─ Remove ed25519_seed_hex from your TOML after this first run.",
+                    key_file.display()
+                );
+                arr
+            } else {
+                // True first boot: generate a cryptographically random seed from the OS.
+                let fresh = SigningKey::generate(&mut rand_core::OsRng);
+                fresh.to_bytes()
+            };
+
+            // Persist the seed and restrict file permissions.
+            Self::write_key_file(key_file, &seed)
+                .with_context(|| format!(
+                    "failed to write identity key file '{}'", key_file.display()
+                ))?;
+            seed
+        };
+
+        let signing_key = SigningKey::from_bytes(&seed);
+        let verifying_key = signing_key.verifying_key();
+        let public_key_hex = hex::encode(verifying_key.to_bytes());
+
+        println!(
+            "[caesar.identity] Node '{}' identity ready\n\
+             ├─ Key file   : {}\n\
+             ├─ Public key : {}\n\
+             └─ Add this public key to hub-dev.toml trusted_public_keys if not already present.",
+            node_id,
+            key_file.display(),
+            public_key_hex,
+        );
+
+        Ok(Self {
+            signing_key,
+            verifying_key,
+            public_key_hex,
+            key_file_path: key_file.to_path_buf(),
+        })
+    }
+
+    /// Write seed as lowercase hex to `path` and set permissions to 0600 on Unix
+    /// so other OS users cannot read the private seed.
+    fn write_key_file(path: &Path, seed: &[u8; 32]) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create key directory '{}'", parent.display())
+            })?;
+        }
+
+        // 64 hex chars + newline
+        std::fs::write(path, format!("{}\n", hex::encode(seed)))
+            .context("failed to write seed to key file")?;
+
+        // Owner-read-only on Unix — prevents other users from reading the seed.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+                .context("failed to restrict key file permissions to 0600")?;
+        }
+
+        println!(
+            "[caesar.identity] New identity key written to '{}'.\n\
+             └─ Back this file up securely — losing it means the hub will reject envelopes from this node.",
+            path.display()
+        );
+        Ok(())
+    }
+
+    /// Consume this identity and produce an `EnvelopeSigner`.
+    pub fn into_signer(self) -> EnvelopeSigner {
+        EnvelopeSigner {
+            signing_key: self.signing_key,
+            verifying_key: self.verifying_key,
+        }
+    }
+}
+
+// ── Envelope Signer ───────────────────────────────────────────────────────────
+
 pub struct EnvelopeSigner {
     signing_key: SigningKey,
     verifying_key: VerifyingKey,
 }
 
 impl EnvelopeSigner {
+    /// Construct from a raw hex seed.
+    /// Prefer `NodeIdentity::load_or_generate` in application code;
+    /// this is kept for tests and external tooling.
     pub fn from_seed_hex(seed_hex: &str) -> Result<Self> {
         let seed = hex::decode(seed_hex).context("invalid ed25519 seed hex")?;
         let seed: [u8; 32] = seed
@@ -85,13 +239,8 @@ mod tests {
     use super::*;
     use crate::protocol::Modality;
 
-    #[test]
-    fn sign_and_verify_round_trip() {
-        let signer = EnvelopeSigner::from_seed_hex(
-            "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
-        )
-        .expect("signer");
-        let track = FusedTrack {
+    fn test_track() -> FusedTrack {
+        FusedTrack {
             node_id: "node-a".into(),
             timestamp_ms: 1,
             track_id: "track-1".into(),
@@ -105,10 +254,77 @@ mod tests {
             contributing_modalities: vec![Modality::Optical],
             source_ids: vec!["cam".into()],
             evidence_digests: vec!["digest".into()],
-        };
+        }
+    }
+
+    #[test]
+    fn sign_and_verify_round_trip() {
+        let signer = EnvelopeSigner::from_seed_hex(
+            "a3f1e2d4b5c67890123456789abcdef0a3f1e2d4b5c67890123456789abcdef0",
+        )
+        .expect("signer");
         let envelope = signer
-            .sign_track("node-a", "caesar_tactical_intel", track)
+            .sign_track("node-a", "caesar_tactical_intel", test_track())
             .expect("sign");
         verify_envelope(&envelope).expect("verify");
+    }
+
+    #[test]
+    fn load_or_generate_creates_stable_key_file() {
+        let dir = std::env::temp_dir().join("caesar_test_identity_stable");
+        let key_path = dir.join("node.key");
+        let _ = std::fs::remove_file(&key_path);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // First call: generates and persists
+        let id1 = NodeIdentity::load_or_generate(&key_path, None, "test-node")
+            .expect("first load_or_generate");
+        assert!(key_path.exists(), "key file must be created on first boot");
+
+        // Second call: loads the same key — identity is stable
+        let id2 = NodeIdentity::load_or_generate(&key_path, None, "test-node")
+            .expect("second load_or_generate");
+        assert_eq!(
+            id1.public_key_hex, id2.public_key_hex,
+            "public key must be identical across boots"
+        );
+
+        // Third call with a different legacy_seed_hex should be ignored
+        // (key file already exists, legacy seed is not used)
+        let legacy = "a3f1e2d4b5c67890123456789abcdef0a3f1e2d4b5c67890123456789abcdef0";
+        let id3 = NodeIdentity::load_or_generate(&key_path, Some(legacy), "test-node")
+            .expect("third call ignores legacy");
+        assert_eq!(
+            id1.public_key_hex, id3.public_key_hex,
+            "key file must take precedence over legacy seed"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn legacy_seed_migration_writes_key_file() {
+        let dir = std::env::temp_dir().join("caesar_test_migration");
+        let key_path = dir.join("node.key");
+        let _ = std::fs::remove_file(&key_path);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let legacy = "a3f1e2d4b5c67890123456789abcdef0a3f1e2d4b5c67890123456789abcdef0";
+        let id = NodeIdentity::load_or_generate(&key_path, Some(legacy), "test-node-migrate")
+            .expect("migration");
+
+        assert!(key_path.exists(), "key file must be written during migration");
+        let stored = std::fs::read_to_string(&key_path).unwrap();
+        assert_eq!(stored.trim(), legacy, "stored seed must match legacy value");
+
+        // Public key must match what from_seed_hex produces
+        let expected_signer = EnvelopeSigner::from_seed_hex(legacy).unwrap();
+        let expected_pk = expected_signer
+            .sign_track("x", "y", test_track())
+            .unwrap()
+            .public_key;
+        assert_eq!(id.public_key_hex, expected_pk);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

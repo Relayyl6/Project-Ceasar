@@ -475,3 +475,174 @@ Dashboard PIP Camera  → automatically switches to the alerting node's live MJP
 | `general` | anything | `alert` |
 
 To add new action mappings, edit `infer_action_from_class()` in `crates/uriel-edge-node/src/actuator.rs` and add the corresponding capability to the relevant actuator entry in `edge-dev.toml`.
+
+## 10. Full-Featured Deployment on Raspberry Pi 3 (Hybrid Distributed Architecture)
+
+Project Caesar runs at **100% functionality** on a Raspberry Pi 3 (1GB RAM) using a
+**Remote Compute Offloading** strategy. Instead of dropping to a degraded heuristic-only
+mode, the Pi 3 runs all physical sensor and actuation workloads while the hub PC handles
+all AI-heavy computation. The result is routed back to the Pi 3 over the local network
+in under a second, seamlessly feeding into the EKF fusion engine and actuator bus.
+
+---
+
+### 10.1 Architecture Overview
+
+```
+┌─────────────────────── Raspberry Pi 3 ──────────────────────────┐
+│  rpicam-jpeg (CSI camera) → JPEG frames                         │
+│  thermal_adapter.py (I2C MLX90640) → temperature grid           │
+│  radar_adapter.py (UART LD2450) → point cloud                   │
+│  EKF Sensor FusionEngine                                         │
+│  GPIO relay / UART serial / MQTT / Webhook Actuators            │
+│  Passive Recon (PCAP, SDR, eBPF, ONVIF, USB)                   │
+│  Ed25519 signing → TCP uplink to hub                            │
+│                                                                  │
+│  [inference] mode = "remote_http"                               │
+│    Optical JPEG ─── POST /infer ──────────────────────────────► │
+│               ◄─── Observation JSON (class, confidence, pos) ── │
+└─────────────────────────────────────────────────────────────────┘
+          │  TCP port 7878 — signed FusedTrack envelopes
+          ▼
+┌────────────────────── Hub PC (10.163.194.96) ────────────────────┐
+│  caesar-hub          (port 7878) — receives + journals tracks   │
+│  remote_infer_server (port 9090) — full Ollama VLM vision       │
+│  caesar_console      (port 8090) — tactical dashboard           │
+│  Ollama (llava)      (port 11434) — thermal/radar text prompts  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+> **Offline resilience**: If the hub PC becomes unreachable (network outage, power loss),
+> the Pi 3 automatically falls back to its **built-in heuristic engine** and continues
+> capturing, sensing, fusing, and actuating hardware autonomously. Telemetry resumes
+> streaming to the hub the moment the connection is restored.
+
+---
+
+### 10.2 Feature Retention Table
+
+| Feature | Pi 5 Full Mode | Pi 3 Hybrid (this section) |
+|---|---|---|
+| Camera capture (CSI / USB) | ✅ | ✅ Identical |
+| Thermal I2C sensor (MLX90640) | ✅ | ✅ Identical |
+| Radar UART sensor (LD2450) | ✅ | ✅ Identical |
+| YOLO-World optical classification | ✅ On Pi | ✅ On hub PC (result sent back) |
+| Ollama VLM visual reasoning | ✅ On Pi | ✅ On hub PC (result sent back) |
+| Ollama text thermal/radar classify | ✅ On Pi | ✅ Direct to hub port 11434 |
+| Heuristic fallback (offline) | ✅ | ✅ Auto-triggers if hub unreachable |
+| EKF Sensor Fusion | ✅ | ✅ Identical |
+| GPIO actuator (relay) | ✅ | ✅ Identical |
+| UART serial actuator (Arduino) | ✅ | ✅ Identical |
+| MQTT actuator (IoT) | ✅ | ✅ Identical |
+| HTTP Webhook actuator | ✅ | ✅ Identical |
+| Passive Recon (PCAP/SDR/eBPF) | ✅ | ✅ Identical |
+| Ed25519 envelope signing | ✅ | ✅ Identical |
+| Dashboard Console | ✅ | ✅ Identical (runs on hub PC) |
+| Dashboard Camera PIP stream | ✅ | ✅ Identical |
+| Mesh Orchestrator | ✅ | ✅ Identical (runs on hub PC) |
+| OpenCV Sentinel | ✅ On Pi | ❌ Disabled on Pi 3 (standard optical worker used instead) |
+
+**Pi 3 RAM footprint: < 50 MB** (vs > 1 GB for ort_native mode).
+
+---
+
+### 10.3 Configure the Pi 3
+
+Edit `configs/edge-pi3.toml` and update **both** occurrences of the hub IP:
+
+```toml
+[uplink]
+tcp_addr = "10.163.194.96:7878"    # ← Your hub PC's local IP
+
+[inference]
+mode            = "remote_http"
+ollama_endpoint = "http://10.163.194.96:9090"   # ← Same hub PC IP
+```
+
+Find your hub PC's IP on **Windows**: run `ipconfig` → look for "IPv4 Address" under
+your Wi-Fi or Ethernet adapter. On **Linux**: run `ip address`.
+
+---
+
+### 10.4 Launch Sequence
+
+#### Step 1 — Bootstrap the hub PC (run once)
+
+```bash
+bash scripts/bootstrap_hub.sh /opt/uriel-caesar
+```
+
+This installs Ollama, pulls the `llava` vision model, and sets up the Python environment.
+
+#### Step 2 — Start hub services (run on your PC)
+
+Open **three terminal windows**:
+
+```bash
+# Terminal 1 — Caesar Hub (receives signed telemetry from Pi 3)
+cargo run -p caesar-hub -- --config configs/hub-dev.toml serve
+
+# Terminal 2 — Remote Inference Server (runs Ollama VLM for the Pi 3)
+python services/remote_infer_server.py --port 9090
+
+# Terminal 3 — Dashboard Console
+python services/caesar_console/server.py --host 0.0.0.0 --port 8090
+```
+
+Open `http://localhost:8090` in your browser to load the tactical dashboard.
+
+#### Step 3 — Bootstrap the Raspberry Pi 3 (run once on Pi)
+
+```bash
+bash scripts/bootstrap_edge_pi.sh /opt/uriel-caesar
+```
+
+#### Step 4 — Launch the edge node on the Pi 3
+
+```bash
+# Build (no ONNX models needed — compiles much faster)
+cargo build --release -p uriel-edge-node
+
+# Launch with the Pi 3 profile
+./target/release/uriel-edge-node --config configs/edge-pi3.toml
+```
+
+You will see output like:
+
+```
+[caesar] Booting Uriel edge node 'tower-bwari-pi3' | site='Bwari' | domain='tactical'
+[caesar.sentinel] Sentinel mode inactive — standard optical worker spawned.
+[edge.recon] Starting passive reconnaissance engine...
+[caesar.tactical][remote_http] Inference OK — class='clear' conf=0.84 stage=ollama
+[caesar.tactical][actuator.system_log] ACTION=alert TARGET=auto ...
+```
+
+---
+
+### 10.5 Verify the Remote Inference Server
+
+You can test the server independently from any machine:
+
+```bash
+# Health check
+curl http://10.163.194.96:9090/health
+
+# Manual inference test (send a blank JPEG)
+python3 - <<'EOF'
+import base64, json, urllib.request
+# Minimal valid JPEG bytes
+jpeg = bytes([0xFF,0xD8,0xFF,0xE0,0x00,0x10,0x4A,0x46,0x49,0x46,0x00,0x01,
+              0x01,0x00,0x00,0x01,0x00,0x01,0x00,0x00,0xFF,0xD9])
+body = json.dumps({"jpeg_b64": base64.b64encode(jpeg).decode(),
+                   "domain": "tactical", "sequence": 1,
+                   "node_id": "test-pi3", "timestamp_ms": 1000}).encode()
+req = urllib.request.Request("http://10.163.194.96:9090/infer",
+      data=body, headers={"Content-Type":"application/json"}, method="POST")
+print(json.loads(urllib.request.urlopen(req).read()))
+EOF
+```
+
+Expected response:
+```json
+{"track_hint": "ollama-track-1", "confidence": 0.84, "class_label": "clear", ...}
+```

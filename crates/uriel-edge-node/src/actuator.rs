@@ -18,7 +18,7 @@ use crate::config::ActuatorConfig;
 // Command and result types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ActuatorCommand {
     /// Action identifier, e.g. "increase_flow", "alert", "lock_perimeter".
     pub action: String,

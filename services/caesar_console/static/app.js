@@ -786,6 +786,36 @@
     _pipPinTimeout = setTimeout(() => { activeCameraNode = null; }, 30000);
   };
 
+  window.openCamera = function(nodeId) {
+    const modal = document.getElementById("cameraModal");
+    const modalTitle = document.getElementById("modalNodeId");
+    const modalImg = document.getElementById("modalCamStream");
+    const fallback = document.getElementById("modalCamStreamFallback");
+    
+    if (modal) {
+      modal.style.display = "flex";
+    }
+    if (modalTitle) {
+      modalTitle.textContent = `${nodeId} · DIRECT OPTICAL TRANSMISSION`;
+    }
+    if (modalImg) {
+      modalImg.style.display = "block";
+      if (fallback) fallback.style.display = "none";
+      modalImg.src = `/api/camera-stream?node=${encodeURIComponent(nodeId)}&_=${Date.now()}`;
+    }
+  };
+
+  window.closeCamera = function() {
+    const modal = document.getElementById("cameraModal");
+    const modalImg = document.getElementById("modalCamStream");
+    if (modal) {
+      modal.style.display = "none";
+    }
+    if (modalImg) {
+      modalImg.src = "";
+    }
+  };
+
   window.addEventListener("caesar:stats", (event) => {
     state.stats = event.detail || {};
     scheduleRender();

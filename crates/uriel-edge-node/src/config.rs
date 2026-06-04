@@ -7,7 +7,17 @@ pub struct EdgeConfig {
     pub loop_count: usize,
     pub fusion_window_ms: u64,
     pub threat_threshold: f32,
-    pub ed25519_seed_hex: String,
+    /// Optional legacy seed.  If present it is used on first boot to populate
+    /// the key file (migration path) and can be removed from the TOML after that.
+    /// Omitting this field entirely is the correct long-term posture —
+    /// the node generates and persists its own identity automatically.
+    #[serde(default)]
+    pub ed25519_seed_hex: Option<String>,
+    /// Path to the persistent Ed25519 seed file.
+    /// Created automatically on first boot if it does not exist.
+    /// Defaults to "./node_identity.key" (relative to the working directory).
+    #[serde(default = "default_key_file")]
+    pub key_file: String,
     /// Project Caesar deployment domain: "agricultural" | "industrial" | "tactical" | "general"
     #[serde(default = "default_domain")]
     pub domain: String,
@@ -27,6 +37,7 @@ pub struct EdgeConfig {
 
 fn default_recon_enabled() -> bool { true }
 fn default_domain() -> String { "general".to_string() }
+fn default_key_file() -> String { "./node_identity.key".to_string() }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Location {
