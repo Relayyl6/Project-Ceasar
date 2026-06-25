@@ -41,3 +41,8 @@ frame_interval_ms = 500
 
 [inference]
 mode = "heuristic"
+
+[drone]
+enabled = true
+mavlink_port = "/dev/ttyAMA0"
+mavlink_baud = 57600

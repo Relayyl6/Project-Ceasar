@@ -327,6 +327,9 @@ mod tests {
             contributing_modalities: vec![Modality::Optical],
             source_ids: vec!["cam".into()],
             evidence_digests: vec!["digest".into()],
+            inference_latency_ms: std::collections::HashMap::new(),
+            end_to_end_latency_ms: None,
+            inference_engine: "heuristic".into(),
         }
     }
 

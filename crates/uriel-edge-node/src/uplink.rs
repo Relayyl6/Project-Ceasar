@@ -1,6 +1,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use anyhow::{bail, Context, Result};
+use futures::StreamExt as _;
 use tokio::{fs::OpenOptions, io::AsyncWriteExt, net::TcpStream, sync::Mutex};
 use uriel_caesar_core::{io::to_json_line, protocol::SignedEnvelope};
 
@@ -21,12 +22,9 @@ enum UplinkKind {
         addr: String,
     },
     Gossipsub {
-        // Simulated libp2p Gossipsub interface
-        // In real deployment, this holds the swarm publisher
-        topic: String,
-        /// F11 FIX: The specific serial port to use for radio uplink.
-        /// Must be explicitly set in config (uplink.serial_port).
-        /// None = no radio, stdout-only logging.
+        /// Channel to send payloads to the background Swarm task.
+        tx: tokio::sync::mpsc::Sender<Vec<u8>>,
+        /// Serial port fallback (RFD900x LoRa radio) if swarm publish fails.
         serial_port: Option<String>,
     },
 }
@@ -75,12 +73,27 @@ impl Uplink {
                 })
             }
             "gossipsub" => {
-                Ok(Self {
-                    inner: UplinkKind::Gossipsub {
-                        topic: settings.publish_topic.clone(),
-                        serial_port: settings.uplink.serial_port.clone(),
-                    },
-                })
+                let topic = settings.uplink.gossipsub_topic.clone();
+                let port = settings.uplink.gossipsub_listen_port;
+                let peers = settings.uplink.bootstrap_peers.clone();
+                match spawn_gossipsub_swarm(&topic, port, peers).await {
+                    Ok(tx) => Ok(Self {
+                        inner: UplinkKind::Gossipsub {
+                            tx,
+                            serial_port: settings.uplink.serial_port.clone(),
+                        },
+                    }),
+                    Err(e) => {
+                        eprintln!(
+                            "[caesar.gossipsub] Failed to start swarm: {} — falling back to stdout",
+                            e
+                        );
+                        // Graceful fallback: stdout
+                        Ok(Self {
+                            inner: UplinkKind::Stdout,
+                        })
+                    }
+                }
             }
             other => bail!("unsupported uplink mode {:?}", other),
         }
@@ -100,10 +113,18 @@ impl Uplink {
             UplinkKind::TcpJsonl { writer, addr } => {
                 publish_tcp_jsonl(writer, addr, payload.as_bytes()).await?;
             }
-            UplinkKind::Gossipsub { topic, serial_port } => {
-                // Here libp2p Swarm::behaviour_mut().gossipsub.publish happens
-                println!("[edge.uplink.gossipsub] Broadcasting to topic {}: {}", topic, payload.trim_end());
+            UplinkKind::Gossipsub { tx, serial_port } => {
+                // Send to real libp2p Gossipsub swarm via mpsc channel
+                let data = payload.as_bytes().to_vec();
+                if let Err(e) = tx.try_send(data) {
+                    eprintln!(
+                        "[caesar.gossipsub] Channel full or closed: {} — falling back to serial/stdout",
+                        e
+                    );
+                }
 
+                // Optional: also send via RFD900x LoRa radio for redundancy.
+                //
                 // F11 FIX: Only write to the explicitly configured serial_port.
                 // The previous code scanned ALL available serial ports and wrote
                 // signed envelopes to whichever one accepted the write first —
@@ -116,19 +137,20 @@ impl Uplink {
                         .open()
                     {
                         Ok(mut port) => {
-                            if port.write_all(payload.as_bytes()).is_ok() {
-                                println!("[edge.uplink.rfd900x] Sent {} bytes via configured port {}", payload.len(), port_name);
-                            } else {
-                                eprintln!("[edge.uplink.rfd900x] Write failed on port {}", port_name);
+                            if let Err(e) = port.write_all(payload.as_bytes()) {
+                                eprintln!(
+                                    "[edge.uplink.rfd900x] Write failed on port {}: {}",
+                                    port_name, e
+                                );
                             }
                         }
                         Err(e) => {
-                            eprintln!("[edge.uplink.rfd900x] Failed to open configured port '{}': {} — logging to stdout only", port_name, e);
-                            println!("[edge.uplink.gossipsub] (stdout fallback) {}", payload.trim_end());
+                            eprintln!(
+                                "[edge.uplink.rfd900x] Failed to open configured port '{}': {} — gossipsub-only",
+                                port_name, e
+                            );
                         }
                     }
-                } else {
-                    println!("[edge.uplink.rfd900x] No serial_port configured \u2014 stdout only (set uplink.serial_port in TOML to enable radio).");
                 }
             }
         }
@@ -186,4 +208,144 @@ async fn connect_writer(addr: &str) -> Result<tokio::io::BufWriter<TcpStream>> {
     .with_context(|| format!("connection to hub at {} timed out after 10s", addr))?
     .with_context(|| format!("failed to connect to hub at {}", addr))?;
     Ok(tokio::io::BufWriter::new(stream))
+}
+
+/// Spawns a libp2p Gossipsub swarm as a Tokio background task.
+/// Returns an mpsc Sender — callers push raw payload bytes through it.
+async fn spawn_gossipsub_swarm(
+    topic_str: &str,
+    listen_port: u16,
+    bootstrap_peers: Vec<String>,
+) -> anyhow::Result<tokio::sync::mpsc::Sender<Vec<u8>>> {
+    use libp2p::{
+        gossipsub::{self, Config as GossipConfig, MessageAuthenticity, ValidationMode},
+        mdns,
+        swarm::SwarmEvent,
+        SwarmBuilder,
+    };
+    use std::time::Duration;
+
+    #[derive(libp2p::swarm::NetworkBehaviour)]
+    struct CaesarBehaviour {
+        gossipsub: gossipsub::Behaviour,
+        mdns: mdns::tokio::Behaviour,
+    }
+
+    let gossip_cfg = GossipConfig::builder()
+        .validation_mode(ValidationMode::Strict)
+        .heartbeat_interval(Duration::from_secs(1))
+        .build()
+        .map_err(|e| anyhow::anyhow!("gossipsub config error: {}", e))?;
+
+    let topic = gossipsub::IdentTopic::new(topic_str);
+    let topic_str_owned = topic_str.to_string();
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
+
+    let mut swarm = SwarmBuilder::with_new_identity()
+        .with_tokio()
+        .with_tcp(
+            libp2p::tcp::Config::default(),
+            libp2p::noise::Config::new,
+            libp2p::yamux::Config::default,
+        )?
+        .with_behaviour(|key| {
+            let gossipsub = gossipsub::Behaviour::new(
+                MessageAuthenticity::Signed(key.clone()),
+                gossip_cfg,
+            )
+            .map_err(|e| anyhow::anyhow!("gossipsub behaviour: {}", e))?;
+            let mdns =
+                mdns::tokio::Behaviour::new(mdns::Config::default(), key.public().to_peer_id())
+                    .map_err(|e| anyhow::anyhow!("mdns behaviour: {}", e))?;
+            Ok(CaesarBehaviour { gossipsub, mdns })
+        })?
+        .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(120)))
+        .build();
+
+    // Subscribe to the topic
+    swarm
+        .behaviour_mut()
+        .gossipsub
+        .subscribe(&topic)
+        .map_err(|e| anyhow::anyhow!("gossipsub subscribe: {:?}", e))?;
+
+    // Listen on all interfaces
+    let listen_addr: libp2p::Multiaddr = format!("/ip4/0.0.0.0/tcp/{}", listen_port).parse()?;
+    swarm.listen_on(listen_addr)?;
+
+    // Dial bootstrap peers
+    for peer_str in &bootstrap_peers {
+        match peer_str.parse::<libp2p::Multiaddr>() {
+            Ok(addr) => {
+                if let Err(e) = swarm.dial(addr.clone()) {
+                    eprintln!(
+                        "[caesar.gossipsub] Failed to dial bootstrap peer {}: {}",
+                        peer_str, e
+                    );
+                }
+            }
+            Err(e) => eprintln!(
+                "[caesar.gossipsub] Invalid bootstrap peer addr '{}': {}",
+                peer_str, e
+            ),
+        }
+    }
+
+    // Spawn the swarm event loop as a background Tokio task.
+    // The mpsc channel bridges synchronous publish() calls into the async swarm.
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                // Outbound: push data received from publish() into gossipsub
+                Some(payload) = rx.recv() => {
+                    match swarm.behaviour_mut().gossipsub.publish(topic.clone(), payload) {
+                        Ok(msg_id) => eprintln!("[caesar.gossipsub] Published message {:?}", msg_id),
+                        Err(e) => eprintln!("[caesar.gossipsub] Publish error: {:?}", e),
+                    }
+                }
+                // Inbound: process swarm events
+                event = swarm.next() => match event {
+                    Some(SwarmEvent::Behaviour(CaesarBehaviourEvent::Mdns(
+                        mdns::Event::Discovered(peers)
+                    ))) => {
+                        for (peer_id, _addr) in peers {
+                            eprintln!("[caesar.gossipsub] Discovered peer via mDNS: {}", peer_id);
+                            swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
+                        }
+                    }
+                    Some(SwarmEvent::Behaviour(CaesarBehaviourEvent::Mdns(
+                        mdns::Event::Expired(peers)
+                    ))) => {
+                        for (peer_id, _addr) in peers {
+                            swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer_id);
+                        }
+                    }
+                    Some(SwarmEvent::Behaviour(CaesarBehaviourEvent::Gossipsub(
+                        gossipsub::Event::Message { message, .. }
+                    ))) => {
+                        eprintln!(
+                            "[caesar.gossipsub] Received message on topic '{}'",
+                            topic_str_owned
+                        );
+                        // In future: forward inbound messages to FusionEngine
+                        let _ = message;
+                    }
+                    Some(SwarmEvent::NewListenAddr { address, .. }) => {
+                        eprintln!("[caesar.gossipsub] Listening on {}", address);
+                    }
+                    Some(SwarmEvent::ConnectionEstablished { peer_id, .. }) => {
+                        eprintln!("[caesar.gossipsub] Connected to peer {}", peer_id);
+                    }
+                    Some(SwarmEvent::ConnectionClosed { peer_id, .. }) => {
+                        eprintln!("[caesar.gossipsub] Disconnected from peer {}", peer_id);
+                    }
+                    None => break, // Swarm closed
+                    _ => {}
+                }
+            }
+        }
+        eprintln!("[caesar.gossipsub] Swarm event loop exited");
+    });
+
+    Ok(tx)
 }

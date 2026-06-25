@@ -1,0 +1,12 @@
+# Project Caesar — Dashboard Console dependencies
+# Run: pip install -r requirements-console.txt
+
+# Camera capture (headless — no Qt dependency)
+opencv-python-headless>=4.8
+Pillow>=10.0
+
+# MQTT actuator dispatch
+paho-mqtt>=1.6
+
+# Schema validation
+pydantic>=2.0

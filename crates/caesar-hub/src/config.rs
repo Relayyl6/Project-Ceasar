@@ -33,6 +33,11 @@ pub struct StorageConfig {
     pub latest_path: String,
     /// Path to the append-only JSONL file that records high-interest envelopes only.
     pub high_interest_path: String,
+    /// Path to the JSON file that stores the cross-node correlated track map.
+    /// When absent from the TOML config the field defaults to an empty string and
+    /// the hub will skip writing correlated_tracks.json (backward-compatible).
+    #[serde(default)]
+    pub correlated_tracks_path: String,
 }
 
 impl StorageConfig {
@@ -46,6 +51,7 @@ impl StorageConfig {
         if self.high_interest_path.trim().is_empty() {
             bail!("`storage.high_interest_path` must not be empty");
         }
+        // correlated_tracks_path is optional — empty string means disabled.
         Ok(())
     }
 }

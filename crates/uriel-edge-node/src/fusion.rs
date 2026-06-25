@@ -1,30 +1,62 @@
 use std::{collections::{HashMap, HashSet}, time::Duration};
 
 use tokio::{sync::mpsc, time::interval};
+use uriel_caesar_core::io::unix_time_ms;
 use uriel_caesar_core::protocol::{FusedTrack, Modality, Observation};
 
 use crate::config::EdgeConfig;
 
 pub struct ExtendedKalmanFilter {
     pub state: [f32; 4], // [x, y, vx, vy]
+    /// False until the first measurement seeds the position state. Without this
+    /// the filter would treat the origin (0,0) as a real prior and drag the
+    /// first estimate halfway to it.
+    initialized: bool,
 }
 
 impl ExtendedKalmanFilter {
     pub fn new() -> Self {
-        Self { state: [0.0; 4] }
+        Self { state: [0.0; 4], initialized: false }
     }
-    
+
+    /// Constant-velocity prediction step: extrapolate position using the
+    /// current velocity estimate. Velocity is held constant between updates.
     pub fn predict(&mut self, dt: f32) {
-        // Linear prediction: x = x + vx * dt
         self.state[0] += self.state[2] * dt;
         self.state[1] += self.state[3] * dt;
     }
-    
-    pub fn update(&mut self, measurement: [f32; 2], confidence: f32) {
-        // EKF Update approximation using Kalman Gain derived from confidence
+
+    /// Correction step. The Kalman gain is approximated from the measurement
+    /// confidence (high confidence → trust the measurement more). The velocity
+    /// state is estimated from the corrected position delta over `dt`, so that
+    /// the next `predict` actually extrapolates motion instead of being a no-op.
+    pub fn update(&mut self, measurement: [f32; 2], confidence: f32, dt: f32) {
         let gain = confidence.clamp(0.1, 0.9);
-        self.state[0] = self.state[0] * (1.0 - gain) + measurement[0] * gain;
-        self.state[1] = self.state[1] * (1.0 - gain) + measurement[1] * gain;
+
+        // Seed directly from the first measurement; there is no meaningful prior.
+        if !self.initialized {
+            self.state[0] = measurement[0];
+            self.state[1] = measurement[1];
+            self.initialized = true;
+            return;
+        }
+
+        let prev_x = self.state[0];
+        let prev_y = self.state[1];
+        let new_x = prev_x * (1.0 - gain) + measurement[0] * gain;
+        let new_y = prev_y * (1.0 - gain) + measurement[1] * gain;
+
+        // Derive velocity from the corrected position change, smoothed by the
+        // same gain so a single noisy frame cannot spike the velocity estimate.
+        if dt > 1e-3 {
+            let vx = (new_x - prev_x) / dt;
+            let vy = (new_y - prev_y) / dt;
+            self.state[2] = self.state[2] * (1.0 - gain) + vx * gain;
+            self.state[3] = self.state[3] * (1.0 - gain) + vy * gain;
+        }
+
+        self.state[0] = new_x;
+        self.state[1] = new_y;
     }
 }
 
@@ -91,7 +123,7 @@ impl FusionEngine {
         let mut ready = Vec::new();
 
         for (track_hint, observations) in buckets.iter_mut() {
-            if observations.len() < 2 {
+            if observations.is_empty() {
                 continue;
             }
 
@@ -117,7 +149,7 @@ impl FusionEngine {
                 };
                 prev_ts_ms = Some(obs.timestamp_ms);
                 ekf.predict(dt);
-                ekf.update([obs.position_m.0, obs.position_m.1], obs.confidence);
+                ekf.update([obs.position_m.0, obs.position_m.1], obs.confidence, dt);
             }
             
             let position_x = ekf.state[0];
@@ -172,6 +204,38 @@ impl FusionEngine {
                 "monitor"
             };
 
+            // ── Inference telemetry aggregation ───────────────────────────────
+            // Populate the per-track latency/engine fields the dashboard and hub
+            // expect. Observations were sorted ascending by timestamp_ms above,
+            // so `first()` is the earliest contributing frame.
+            let earliest_ts = observations
+                .first()
+                .map(|obs| obs.timestamp_ms)
+                .unwrap_or(timestamp_ms);
+            let end_to_end_latency_ms = Some(unix_time_ms().saturating_sub(earliest_ts));
+
+            let mut inference_latency_ms: HashMap<String, u64> = HashMap::new();
+            for obs in observations.iter() {
+                if let Some(ms) = obs.inference_latency_ms {
+                    let key = format!("{:?}", obs.modality).to_lowercase();
+                    let slot = inference_latency_ms.entry(key).or_insert(0);
+                    *slot = (*slot).max(ms);
+                }
+            }
+
+            // Attribute the track to the engine behind its highest-confidence
+            // contributing observation (the one that most drove the verdict).
+            let inference_engine = observations
+                .iter()
+                .filter(|obs| !obs.inference_engine.is_empty())
+                .max_by(|a, b| {
+                    a.confidence
+                        .partial_cmp(&b.confidence)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .map(|obs| obs.inference_engine.clone())
+                .unwrap_or_default();
+
             ready.push(FusedTrack {
                 node_id: self.settings.node_id.clone(),
                 timestamp_ms,
@@ -201,6 +265,9 @@ impl FusionEngine {
                         .map(|obs| obs.evidence_digest.clone())
                         .collect(),
                 ),
+                inference_latency_ms,
+                end_to_end_latency_ms,
+                inference_engine,
             });
 
             observations.clear();

@@ -78,10 +78,99 @@ pub fn encode_vocabulary(vocab: &[String], endpoint: &str) -> Option<ort::Value>
     ort::Value::from_array(arr).ok()
 }
 
-pub fn apply_nms(tensor: ndarray::ArrayViewD<f32>, custom_vocab: &[String]) -> Option<(String, f32, f32, f32)> {
-    if tensor.is_empty() { return None; }
-    let class = if !custom_vocab.is_empty() { custom_vocab[0].clone() } else { "person".to_string() };
-    Some((class, 0.92, 15.0, 20.0))
+pub fn apply_nms(data: &[f32], num_anchors: usize, num_classes: usize, custom_vocab: &[String]) -> Option<(String, f32, f32, f32)> {
+    let conf_threshold = 0.25;
+    let iou_threshold = 0.45;
+
+    struct Detection {
+        class_idx: usize,
+        score: f32,
+        x1: f32,
+        y1: f32,
+        x2: f32,
+        y2: f32,
+        cx: f32,
+        cy: f32,
+    }
+
+    let mut detections = Vec::new();
+    let row_len = 4 + num_classes;
+    for i in 0..num_anchors {
+        let row = &data[i * row_len..(i + 1) * row_len];
+        let cx = row[0];
+        let cy = row[1];
+        let w = row[2];
+        let h = row[3];
+
+        let mut max_score = 0.0;
+        let mut best_class = 0;
+        for c in 0..num_classes {
+            let logit = row[4 + c];
+            let score = 1.0 / (1.0 + (-logit).exp());
+            if score > max_score {
+                max_score = score;
+                best_class = c;
+            }
+        }
+
+        if max_score > conf_threshold {
+            let x1 = cx - w / 2.0;
+            let y1 = cy - h / 2.0;
+            let x2 = cx + w / 2.0;
+            let y2 = cy + h / 2.0;
+            detections.push(Detection {
+                class_idx: best_class,
+                score: max_score,
+                x1, y1, x2, y2, cx, cy
+            });
+        }
+    }
+
+    detections.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut keep = Vec::new();
+    for (i, det) in detections.iter().enumerate() {
+        let mut discard = false;
+        for &k in &keep {
+            let kept: &Detection = &detections[k];
+            if kept.class_idx != det.class_idx {
+                continue;
+            }
+            let inter_x1 = det.x1.max(kept.x1);
+            let inter_y1 = det.y1.max(kept.y1);
+            let inter_x2 = det.x2.min(kept.x2);
+            let inter_y2 = det.y2.min(kept.y2);
+
+            let inter_w = (inter_x2 - inter_x1).max(0.0);
+            let inter_h = (inter_y2 - inter_y1).max(0.0);
+            let inter_area = inter_w * inter_h;
+            
+            if inter_area > 0.0 {
+                let area1 = (det.x2 - det.x1) * (det.y2 - det.y1);
+                let area2 = (kept.x2 - kept.x1) * (kept.y2 - kept.y1);
+                let iou = inter_area / (area1 + area2 - inter_area);
+                if iou > iou_threshold {
+                    discard = true;
+                    break;
+                }
+            }
+        }
+        if !discard {
+            keep.push(i);
+        }
+    }
+
+    if keep.is_empty() {
+        None
+    } else {
+        let best = &detections[keep[0]];
+        let class_name = if best.class_idx < custom_vocab.len() {
+            custom_vocab[best.class_idx].clone()
+        } else {
+            "unknown".to_string()
+        };
+        Some((class_name, best.score, best.cx, best.cy))
+    }
 }
 
 pub fn get_latest_robot_telemetry(_config: &EdgeConfig) -> Vec<f32> {
@@ -125,10 +214,30 @@ pub fn preprocess_multimodal(_frame: &OpticalFrame, _telemetry: Vec<f32>, _confi
         .unwrap_or_else(|_| ort::Value::from_array(Array::zeros((1, 3, 224, 224))).expect("zero array"))
 }
 
-pub fn decode_gemini_er_output(_outputs: Vec<ort::Value>) -> String {
-    "navigational-hazard-detected".to_string()
+pub fn decode_gemini_er_output(outputs: &[ort::Value], vocabulary: &[String]) -> String {
+    if let Some(output) = outputs.first() {
+        if let Ok(tensor) = output.try_extract_tensor::<f32>() {
+            if let Some(slice) = tensor.as_slice() {
+                let mut max_val = f32::MIN;
+                let mut max_idx = 0;
+                for (i, &val) in slice.iter().enumerate() {
+                    if val > max_val {
+                        max_val = val;
+                        max_idx = i;
+                    }
+                }
+                if max_idx < vocabulary.len() {
+                    return vocabulary[max_idx].clone();
+                }
+            }
+        }
+    }
+    "unknown".to_string()
 }
 // ------------------------------------------------------------------
+
+static YOLO_PIPELINE: std::sync::OnceLock<OrtYoloPipeline> = std::sync::OnceLock::new();
+static GEMINI_PIPELINE: std::sync::OnceLock<GeminiRoboticsERPipeline> = std::sync::OnceLock::new();
 
 pub struct OrtYoloPipeline {
     session: Session,
@@ -164,6 +273,7 @@ impl OrtYoloPipeline {
         let input_tensor = ort::Value::from_array(image_array)?;
         
         // Check if this is YOLO-World (needs text embeddings) or standard YOLO (only needs image)
+        let t0 = std::time::Instant::now();
         let outputs = if self.session.inputs.len() > 1 {
             // F6 FIX: encode_vocabulary now returns Option; fall back to heuristic if it fails.
             let text_embeddings = match encode_vocabulary(
@@ -179,9 +289,17 @@ impl OrtYoloPipeline {
         } else {
             self.session.run(ort::inputs![input_tensor]?)?
         };
+        let latency_ms = t0.elapsed().as_millis() as u64;
         
         let tensor = outputs[0].try_extract_tensor::<f32>()?;
-        let (class_label, confidence, pos_x, pos_y) = apply_nms(tensor, &custom_vocab)
+        let shape = tensor.shape();
+        let num_anchors = shape[1];
+        let num_classes = shape[2] - 4;
+        let slice = match tensor.as_slice() {
+            Some(s) => s,
+            None => return Err(anyhow::anyhow!("Tensor not contiguous")),
+        };
+        let (class_label, confidence, pos_x, pos_y) = apply_nms(slice, num_anchors, num_classes, &custom_vocab)
             .unwrap_or((custom_vocab[0].clone(), 0.88, 15.0, 20.0));
         
         Ok(Observation {
@@ -194,18 +312,28 @@ impl OrtYoloPipeline {
             velocity_mps: None, // No real velocity from ONNX bounding box output
             source_id: _frame.camera_id.clone(),
             evidence_digest: format!("ort-{}-{}", &class_label[..class_label.len().min(8)], _frame.sequence),
+            inference_latency_ms: Some(latency_ms),
+            inference_engine: "onnx".to_string(),
         })
     }
 }
 
 pub struct GeminiRoboticsERPipeline {
     session: Session,
+    pub vocabulary: Vec<String>,
 }
 
 impl GeminiRoboticsERPipeline {
     pub fn new(model_path: &str) -> Result<Self> {
         let session = Session::builder()?.with_optimization_level(GraphOptimizationLevel::Level3)?.commit_from_file(model_path)?;
-        Ok(Self { session })
+        Ok(Self { 
+            session, 
+            vocabulary: vec![
+                "navigational-hazard-detected".to_string(),
+                "person".to_string(),
+                "vehicle".to_string(),
+            ] 
+        })
     }
     
     pub fn evaluate_embodied_reasoning(&self, _frame: &OpticalFrame, config: &EdgeConfig) -> Result<Observation> {
@@ -216,8 +344,10 @@ impl GeminiRoboticsERPipeline {
         // we still need it below for position/velocity extraction.
         let telemetry_clone = telemetry.clone();
         let inputs = preprocess_multimodal(_frame, telemetry, config);
+        let t0 = std::time::Instant::now();
         let outputs = self.session.run(ort::inputs![inputs]?)?;
-        let class_label = decode_gemini_er_output(outputs.clone());
+        let latency_ms = t0.elapsed().as_millis() as u64;
+        let class_label = decode_gemini_er_output(&outputs, &self.vocabulary);
         
         // Extract confidence from first output tensor if available
         let confidence = outputs[0].try_extract_tensor::<f32>()
@@ -240,6 +370,8 @@ impl GeminiRoboticsERPipeline {
             velocity_mps: telemetry_clone.get(2).copied(),
             source_id: _frame.camera_id.clone(),
             evidence_digest: format!("gemini-er-{}", _frame.sequence),
+            inference_latency_ms: Some(latency_ms),
+            inference_engine: "onnx".to_string(),
         })
     }
 }
@@ -368,27 +500,38 @@ async fn optical_infer(settings: &EdgeConfig, frame: OpticalFrame) -> Result<Obs
 
             let settings_clone = settings.clone();
             let frame_clone = frame.clone();
-            let (onnx_success_res, observation_result_res) = tokio::task::spawn_blocking(move || {
+            
+            let onnx_future = tokio::task::spawn_blocking(move || {
                 let mut success = false;
                 let mut res = Err(anyhow::anyhow!("ONNX initialization failed"));
                 if let Some(gemini_path) = &settings_clone.inference.model_gemini_er {
-                    if let Ok(pipeline) = GeminiRoboticsERPipeline::new(gemini_path) {
-                        if let Ok(obs) = pipeline.evaluate_embodied_reasoning(&frame_clone, &settings_clone) {
-                            success = true;
-                            res = Ok(obs);
-                        }
+                    // SEC-5: Pool the ONNX session to avoid per-frame disk reload
+                    let pipeline = GEMINI_PIPELINE.get_or_init(|| GeminiRoboticsERPipeline::new(gemini_path).expect("Failed to init Gemini-ER ONNX"));
+                    if let Ok(obs) = pipeline.evaluate_embodied_reasoning(&frame_clone, &settings_clone) {
+                        success = true;
+                        res = Ok(obs);
                     }
                 } else {
                     let model_path = settings_clone.inference.model_yolo_world.as_deref().unwrap_or("models/yolov8n.onnx");
-                    if let Ok(pipeline) = OrtYoloPipeline::new(model_path, 0.5) {
-                        if let Ok(obs) = pipeline.infer_yolo_world(&frame_clone, &settings_clone) {
-                            success = true;
-                            res = Ok(obs);
-                        }
+                    // SEC-5: Pool the ONNX session to avoid per-frame disk reload
+                    let pipeline = YOLO_PIPELINE.get_or_init(|| OrtYoloPipeline::new(model_path, 0.5).expect("Failed to init YOLO ONNX"));
+                    if let Ok(obs) = pipeline.infer_yolo_world(&frame_clone, &settings_clone) {
+                        success = true;
+                        res = Ok(obs);
                     }
                 }
                 (success, res)
-            }).await.unwrap_or((false, Err(anyhow::anyhow!("spawn_blocking failed"))));
+            });
+
+            // Enforce strict 100ms timeout on ONNX execution to prevent frame starvation
+            let (onnx_success_res, observation_result_res) = match tokio::time::timeout(std::time::Duration::from_millis(100), onnx_future).await {
+                Ok(Ok((success, res))) => (success, res),
+                Ok(Err(_)) => (false, Err(anyhow::anyhow!("spawn_blocking failed"))),
+                Err(_) => {
+                    eprintln!("[caesar.{}.inference] ONNX Execution Timeout (exceeded 100ms)!", settings.domain);
+                    (false, Err(anyhow::anyhow!("ONNX timeout exceeded")))
+                }
+            };
             
             onnx_success = onnx_success_res;
             observation_result = observation_result_res;
@@ -399,10 +542,15 @@ async fn optical_infer(settings: &EdgeConfig, frame: OpticalFrame) -> Result<Obs
 
             // 2. FALLBACK: Ollama Vision API
             println!("[caesar.{}.inference] ONNX unavailable — falling back to Ollama VLM", settings.domain);
-            match ollama_vision_infer(settings, frame.clone()).await {
-                Ok(obs) => return Ok(obs),
-                Err(e) => {
+            let ollama_future = ollama_vision_infer(settings, frame.clone());
+            match tokio::time::timeout(std::time::Duration::from_millis(300), ollama_future).await {
+                Ok(Ok(obs)) => return Ok(obs),
+                Ok(Err(e)) => {
                     println!("[caesar.{}.inference] Ollama failed: {}. Heuristic engaged.", settings.domain, e);
+                    return heuristic_optical_infer(frame);
+                }
+                Err(_) => {
+                    println!("[caesar.{}.inference] Ollama Execution Timeout (exceeded 300ms)! Heuristic engaged.", settings.domain);
                     return heuristic_optical_infer(frame);
                 }
             }
@@ -438,11 +586,13 @@ async fn remote_http_infer(settings: &EdgeConfig, frame: OpticalFrame) -> Result
         "camera_id":   frame.camera_id,
     });
 
+    let t0 = std::time::Instant::now();
     let resp_result = get_http_client()
         .post(format!("{}/infer", server_url))
         .json(&body)
         .send()
         .await;
+    let latency_ms = t0.elapsed().as_millis() as u64;
 
     match resp_result {
         Ok(resp) => {
@@ -465,6 +615,8 @@ async fn remote_http_infer(settings: &EdgeConfig, frame: OpticalFrame) -> Result
                         velocity_mps:     r.velocity_mps,
                         source_id:        frame.camera_id,
                         evidence_digest:  r.evidence_digest,
+                        inference_latency_ms: Some(latency_ms),
+                        inference_engine: "remote_http".to_string(),
                     })
                 }
                 Err(e) => {
@@ -528,12 +680,24 @@ async fn ollama_vision_infer(settings: &EdgeConfig, frame: OpticalFrame) -> Resu
     });
 
     let client = get_http_client();
-    let resp_json: serde_json::Value = client
+    let t0 = std::time::Instant::now();
+    let req_future = client
         .post(format!("{}/api/generate", endpoint))
         .json(&body)
-        .send().await
-        .context("Failed to connect to Ollama API")?
-        .json().await?;
+        .send();
+
+    // Enforce strict 300ms timeout on VLM to prevent frame processing collapse
+    let resp_result = tokio::time::timeout(std::time::Duration::from_millis(300), req_future).await;
+
+    let resp_json: serde_json::Value = match resp_result {
+        Ok(Ok(resp)) => resp.json().await?,
+        Ok(Err(e)) => return Err(e).context("Failed to connect to Ollama API"),
+        Err(_) => {
+            eprintln!("[caesar.{}.inference] Ollama VLM Timeout (exceeded 300ms)!", settings.domain);
+            return Err(anyhow::anyhow!("Ollama timeout exceeded"));
+        }
+    };
+    let latency_ms = t0.elapsed().as_millis() as u64;
 
     let label      = resp_json["response"].as_str().unwrap_or("unknown-anomaly").trim().to_lowercase();
     let eval_count = resp_json["eval_count"].as_u64().unwrap_or(5);
@@ -552,10 +716,13 @@ async fn ollama_vision_infer(settings: &EdgeConfig, frame: OpticalFrame) -> Resu
         source_id: frame.camera_id,
         // Content-addressed digest so downstream consumers can verify the frame.
         evidence_digest: format!("blake3:{}", blake3::hash(&frame.jpeg_bytes).to_hex()),
+        inference_latency_ms: Some(latency_ms),
+        inference_engine: "ollama".to_string(),
     })
 }
 
 fn heuristic_optical_infer(frame: OpticalFrame) -> Result<Observation> {
+    let t0 = std::time::Instant::now();
     let sample = frame
         .jpeg_bytes
         .iter()
@@ -564,6 +731,7 @@ fn heuristic_optical_infer(frame: OpticalFrame) -> Result<Observation> {
         .sum::<u64>() as f32
         / 256.0;
     let confidence = ((sample / 255.0) + 0.32).clamp(0.3, 0.96);
+    let latency_ms = t0.elapsed().as_millis() as u64;
     // M3 FIX: Return a domain-neutral label so hub-offline mode doesn't
     // trigger "lock_perimeter" (the "vehicle" label's tactical mapping).
     // "motion-detected" maps to "alert" across all domains, which is the
@@ -579,6 +747,8 @@ fn heuristic_optical_infer(frame: OpticalFrame) -> Result<Observation> {
         velocity_mps: None,
         source_id: frame.camera_id,
         evidence_digest: blake3::hash(&frame.jpeg_bytes).to_hex().to_string(),
+        inference_latency_ms: Some(latency_ms),
+        inference_engine: "heuristic".to_string(),
     })
 }
 
@@ -599,6 +769,7 @@ async fn command_optical_infer(settings: &EdgeConfig, frame: OpticalFrame) -> Re
         sequence: frame.sequence,
     };
 
+    let t0 = std::time::Instant::now();
     let mut command = Command::new(program);
     for arg in args {
         command.arg(arg);
@@ -637,6 +808,7 @@ async fn command_optical_infer(settings: &EdgeConfig, frame: OpticalFrame) -> Re
 
     let response: DetectorCommandResponse =
         serde_json::from_slice(&output.stdout).context("failed to parse detector JSON output")?;
+    let latency_ms = t0.elapsed().as_millis() as u64;
     Ok(Observation {
         track_hint: response.track_hint,
         timestamp_ms: frame.timestamp_ms,
@@ -649,6 +821,8 @@ async fn command_optical_infer(settings: &EdgeConfig, frame: OpticalFrame) -> Re
         evidence_digest: response
             .evidence_digest
             .unwrap_or_else(|| blake3::hash(&frame.jpeg_bytes).to_hex().to_string()),
+        inference_latency_ms: Some(latency_ms),
+        inference_engine: "command_json".to_string(),
     })
 }
 
@@ -672,6 +846,7 @@ async fn ollama_thermal_classify(frame: &ThermalFrame, settings: &EdgeConfig) ->
 
     let body = serde_json::json!({ "model": model, "prompt": prompt, "stream": false });
     let client = get_http_client();
+    let t0 = std::time::Instant::now();
     let resp: serde_json::Value = client
         .post(format!("{}/api/generate", endpoint))
         .json(&body)
@@ -679,6 +854,7 @@ async fn ollama_thermal_classify(frame: &ThermalFrame, settings: &EdgeConfig) ->
         .context("ollama thermal: connect failed")?
         .json().await
         .context("ollama thermal: parse failed")?;
+    let latency_ms = t0.elapsed().as_millis() as u64;
 
     let label = resp["response"].as_str().unwrap_or("warm-object").trim().to_lowercase();
     // Confidence: derived from Ollama eval_count (tokens generated). Short, direct answers
@@ -699,6 +875,8 @@ async fn ollama_thermal_classify(frame: &ThermalFrame, settings: &EdgeConfig) ->
         velocity_mps: None,
         source_id: frame.camera_id.clone(),
         evidence_digest: digest,
+        inference_latency_ms: Some(latency_ms),
+        inference_engine: "ollama".to_string(),
     })
 }
 
@@ -718,7 +896,9 @@ async fn thermal_infer(frame: ThermalFrame, settings: &EdgeConfig) -> Result<Obs
             }
             let input = ort::Value::from_array(arr);
             if let Ok(input_val) = input {
+                let t0 = std::time::Instant::now();
                 if let Ok(outputs) = session.run(ort::inputs![input_val]) {
+                    let latency_ms = t0.elapsed().as_millis() as u64;
                     let stress = outputs[0].try_extract_tensor::<f32>()
                         .ok()
                         .and_then(|t| t.iter().cloned().reduce(f32::max))
@@ -735,6 +915,8 @@ async fn thermal_infer(frame: ThermalFrame, settings: &EdgeConfig) -> Result<Obs
                         velocity_mps: None,
                         source_id: frame.camera_id,
                         evidence_digest: blake3::hash(&bytes).to_hex().to_string(),
+                        inference_latency_ms: Some(latency_ms),
+                        inference_engine: "onnx".to_string(),
                     });
                 }
             }
@@ -748,8 +930,10 @@ async fn thermal_infer(frame: ThermalFrame, settings: &EdgeConfig) -> Result<Obs
 
     // --- 3. Heuristic (absolute last resort — no network, no model) ---
     eprintln!("[edge.inference.thermal] Ollama unreachable, using heuristic.");
+    let t0 = std::time::Instant::now();
     let peak_temp = frame.temperatures_c.iter().copied().fold(f32::MIN, f32::max);
     let bytes: Vec<u8> = frame.temperatures_c.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let latency_ms = t0.elapsed().as_millis() as u64;
     Ok(Observation {
         track_hint: format!("heuristic-thermal-{}", frame.sequence % 6),
         timestamp_ms: frame.timestamp_ms,
@@ -760,6 +944,8 @@ async fn thermal_infer(frame: ThermalFrame, settings: &EdgeConfig) -> Result<Obs
         velocity_mps: None,
         source_id: frame.camera_id,
         evidence_digest: blake3::hash(&bytes).to_hex().to_string(),
+        inference_latency_ms: Some(latency_ms),
+        inference_engine: "heuristic".to_string(),
     })
 }
 
@@ -779,6 +965,7 @@ async fn ollama_radar_classify(frame: &RadarSweep, mean_range: f32, mean_velocit
 
     let body = serde_json::json!({ "model": model, "prompt": prompt, "stream": false });
     let client = get_http_client();
+    let t0 = std::time::Instant::now();
     let resp: serde_json::Value = client
         .post(format!("{}/api/generate", endpoint))
         .json(&body)
@@ -786,6 +973,7 @@ async fn ollama_radar_classify(frame: &RadarSweep, mean_range: f32, mean_velocit
         .context("ollama radar: connect failed")?
         .json().await
         .context("ollama radar: parse failed")?;
+    let latency_ms = t0.elapsed().as_millis() as u64;
 
     let label = resp["response"].as_str().unwrap_or("moving-object").trim().to_lowercase();
     // Confidence: derived from Ollama eval_count same as thermal path.
@@ -810,6 +998,8 @@ async fn ollama_radar_classify(frame: &RadarSweep, mean_range: f32, mean_velocit
         velocity_mps: Some(mean_velocity),
         source_id: frame.radar_id.clone(),
         evidence_digest: digest,
+        inference_latency_ms: Some(latency_ms),
+        inference_engine: "ollama".to_string(),
     })
 }
 
@@ -844,7 +1034,9 @@ async fn radar_infer(frame: RadarSweep, settings: &EdgeConfig) -> Result<Observa
             }
             let input = ort::Value::from_array(arr);
             if let Ok(input_val) = input {
+                let t0 = std::time::Instant::now();
                 if let Ok(outputs) = session.run(ort::inputs![input_val]) {
+                    let latency_ms = t0.elapsed().as_millis() as u64;
                     let admm_score = outputs[0].try_extract_tensor::<f32>()
                         .ok()
                         .and_then(|t| t.iter().cloned().reduce(f32::max))
@@ -866,6 +1058,8 @@ async fn radar_infer(frame: RadarSweep, settings: &EdgeConfig) -> Result<Observa
                         velocity_mps: Some(mean_velocity),
                         source_id: frame.radar_id,
                         evidence_digest: blake3::hash(&serialized).to_hex().to_string(),
+                        inference_latency_ms: Some(latency_ms),
+                        inference_engine: "onnx".to_string(),
                     });
                 }
             }
@@ -880,6 +1074,8 @@ async fn radar_infer(frame: RadarSweep, settings: &EdgeConfig) -> Result<Observa
 
     // --- 3. Heuristic (absolute last resort) ---
     eprintln!("[edge.inference.radar] Ollama unreachable, using heuristic.");
+    let t0 = std::time::Instant::now();
+    let latency_ms = t0.elapsed().as_millis() as u64;
     Ok(Observation {
         track_hint: format!("heuristic-radar-{}", frame.sequence % 6),
         timestamp_ms: frame.timestamp_ms,
@@ -890,6 +1086,8 @@ async fn radar_infer(frame: RadarSweep, settings: &EdgeConfig) -> Result<Observa
         velocity_mps: Some(mean_velocity),
         source_id: frame.radar_id,
         evidence_digest: blake3::hash(&serialized).to_hex().to_string(),
+        inference_latency_ms: Some(latency_ms),
+        inference_engine: "heuristic".to_string(),
     })
 }
 

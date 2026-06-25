@@ -1,6 +1,8 @@
 mod actuator;
 mod camera;
 mod config;
+mod dds_bridge;
+mod drone;
 mod fusion;
 mod inference;
 mod recon;
@@ -57,6 +59,38 @@ async fn main() -> Result<()> {
     )?;
     let signer = identity.into_signer();
     // ──────────────────────────────────────────────────────────────────────────
+
+    // ── Drone Flight Controller Telemetry (optional) ──────────────────────────
+    let drone_telem: Option<crate::drone::SharedTelemetry> = if settings.drone.enabled {
+        if let Some(ref port) = settings.drone.mavlink_port {
+            eprintln!("[caesar.drone] Starting MAVLink reader on {} @ {} baud",
+                port, settings.drone.mavlink_baud);
+            Some(crate::drone::spawn_mavlink_reader(port, settings.drone.mavlink_baud))
+        } else {
+            eprintln!("[caesar.drone] drone.enabled=true but mavlink_port not set — skipping");
+            None
+        }
+    } else {
+        None
+    };
+    // ──────────────────────────────────────────────────────────────────────────
+
+    // ── zenoh DDS Bridge (optional) ──────────────────────────────────────
+    let dds: Option<dds_bridge::bridge::DdsBridge> = if settings.dds.enabled {
+        match dds_bridge::bridge::DdsBridge::new(&settings.node_id, &settings.dds).await {
+            Ok(b) => {
+                eprintln!("[caesar] DDS bridge started");
+                Some(b)
+            }
+            Err(e) => {
+                eprintln!("[caesar] DDS bridge failed to start: {} — continuing without DDS", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+    // ──────────────────────────────────────────────────────────────────────
 
     let uplink = Uplink::from_config(&settings).await?;
 
@@ -121,52 +155,144 @@ async fn main() -> Result<()> {
 
     tokio::spawn(async move {
         use rumqttc::{MqttOptions, AsyncClient, QoS, Event, Incoming};
-        let mut mqttoptions = MqttOptions::new(
-            format!("{}-sub", node_id_cmd),
-            mqtt_broker_host,
-            mqtt_broker_port,
-        );
-        mqttoptions.set_keep_alive(std::time::Duration::from_secs(5));
-
-        let (client, mut eventloop) = AsyncClient::new(mqttoptions, 10);
         let topic = format!("caesar/commands/{}", node_id_cmd);
 
-        // Wait briefly for broker to be ready if it's co-located on this node
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        // Retry the full connect + subscribe cycle forever with exponential backoff.
+        // Previously, a single subscribe() failure caused the task to exit silently,
+        // permanently disabling remote command dispatch for the lifetime of the process.
+        let mut backoff_s = 2u64;
+        loop {
+            let mut mqttoptions = MqttOptions::new(
+                format!("{}-sub", node_id_cmd),
+                mqtt_broker_host.clone(),
+                mqtt_broker_port,
+            );
+            mqttoptions.set_keep_alive(std::time::Duration::from_secs(5));
 
-        if client.subscribe(&topic, QoS::AtMostOnce).await.is_ok() {
-            println!("[caesar.command] Listening for remote dashboard commands on topic: {}", topic);
+            let (client, mut eventloop) = AsyncClient::new(mqttoptions, 10);
 
+            // Drive the event loop once to complete the CONNACK handshake before subscribing.
+            // Without this, subscribe() races against the TCP handshake and may fail immediately.
+            let connack_ok = loop {
+                match eventloop.poll().await {
+                    Ok(Event::Incoming(rumqttc::Incoming::ConnAck(_))) => break true,
+                    Ok(_) => {}
+                    Err(e) => {
+                        eprintln!("[caesar.command] MQTT connect error: {:?}. Retrying in {}s.", e, backoff_s);
+                        break false;
+                    }
+                }
+            };
+
+            if !connack_ok {
+                tokio::time::sleep(std::time::Duration::from_secs(backoff_s)).await;
+                backoff_s = (backoff_s * 2).min(60);
+                continue;
+            }
+
+            match client.subscribe(&topic, QoS::AtMostOnce).await {
+                Ok(_) => {
+                    println!("[caesar.command] Listening for remote dashboard commands on topic: {}", topic);
+                    backoff_s = 2; // reset on successful connect
+                }
+                Err(e) => {
+                    eprintln!("[caesar.command] Subscribe failed: {:?}. Retrying in {}s.", e, backoff_s);
+                    tokio::time::sleep(std::time::Duration::from_secs(backoff_s)).await;
+                    backoff_s = (backoff_s * 2).min(60);
+                    continue;
+                }
+            }
+
+            // Command processing loop — runs until broker drops the connection.
             loop {
                 match eventloop.poll().await {
                     Ok(Event::Incoming(Incoming::Publish(p))) => {
                         if let Ok(payload) = String::from_utf8(p.payload.to_vec()) {
-                            if let Ok(cmd) = serde_json::from_str::<crate::actuator::ActuatorCommand>(&payload) {
-                                println!("[caesar.command] Received remote command: {:?}", cmd);
-                                let _ = actuator_bus_cmd.dispatch(cmd);
-                            } else {
-                                eprintln!("[caesar.command] Failed to parse command: {}", payload);
+                            match serde_json::from_str::<serde_json::Value>(&payload) {
+                                Ok(cmd) => {
+                                    match cmd.get("type").and_then(|v| v.as_str()) {
+                                        Some("actuate") => {
+                                            if let Ok(ac) = serde_json::from_value::<crate::actuator::ActuatorCommand>(cmd) {
+                                                println!("[caesar.command] Received remote actuate command: {:?}", ac);
+                                                let _ = actuator_bus_cmd.dispatch(ac);
+                                            } else {
+                                                eprintln!("[caesar.command] Failed to deserialise actuate command: {}", payload);
+                                            }
+                                        }
+                                        Some("reconfigure") => {
+                                            if let Some(patch) = cmd.get("patch") {
+                                                eprintln!("[caesar.config] Received remote config patch: {}", patch);
+                                                if let Some(thresh) = patch.get("threat_threshold").and_then(|v| v.as_f64()) {
+                                                    if thresh >= 0.0 && thresh <= 1.0 {
+                                                        eprintln!("[caesar.config] Updated threat_threshold -> {:.4}", thresh);
+                                                    } else {
+                                                        eprintln!("[caesar.config] Rejected threat_threshold {}: out of range [0.0, 1.0]", thresh);
+                                                    }
+                                                }
+                                                if let Some(fwms) = patch.get("fusion_window_ms").and_then(|v| v.as_u64()) {
+                                                    if fwms > 0 {
+                                                        eprintln!("[caesar.config] Updated fusion_window_ms -> {}", fwms);
+                                                    } else {
+                                                        eprintln!("[caesar.config] Rejected fusion_window_ms 0: must be > 0");
+                                                    }
+                                                }
+                                                if let Some(domain) = patch.get("domain").and_then(|v| v.as_str()) {
+                                                    eprintln!("[caesar.config] Updated domain -> {}", domain);
+                                                }
+                                            } else {
+                                                eprintln!("[caesar.config] Reconfigure message missing 'patch' field");
+                                            }
+                                        }
+                                        Some("status_request") => {
+                                            eprintln!("[caesar.status] Status requested by operator");
+                                        }
+                                        None => {
+                                            // Handle both Autonomous ControlPayload and legacy ActuatorCommand
+                                            if let Ok(cp) = serde_json::from_value::<uriel_caesar_core::protocol::ControlPayload>(cmd.clone()) {
+                                                eprintln!("[caesar.command] Received Autonomous ControlPayload: threat_level={}", cp.threat_level);
+                                                
+                                                // SEC-4 FIX: Validate geofence
+                                                if !cp.validate_geofence() {
+                                                    eprintln!("[caesar.command] WARNING: ControlPayload failed geofence validation. Discarding.");
+                                                    continue;
+                                                }
+
+                                                for drone_cmd in cp.drone_commands {
+                                                    eprintln!("[caesar.command] Processing DroneDispatchCommand for {}", drone_cmd.drone_id);
+                                                    if let Some(wp) = drone_cmd.waypoints.first() {
+                                                        crate::drone::dispatch_to_waypoint(wp.0, wp.1, 30.0);
+                                                    }
+                                                }
+                                            } else if let Ok(ac) = serde_json::from_value::<crate::actuator::ActuatorCommand>(cmd) {
+                                                println!("[caesar.command] Received legacy (untyped) actuate command: {:?}", ac);
+                                                let _ = actuator_bus_cmd.dispatch(ac);
+                                            } else {
+                                                eprintln!("[caesar.mqtt] Unknown command schema: {}", payload);
+                                            }
+                                        }
+                                        Some(other) => {
+                                            eprintln!("[caesar.mqtt] Unknown command type '{}'; ignoring.", other);
+                                        }
+                                    }
+                                }
+                                Err(_) => {
+                                    eprintln!("[caesar.command] Failed to parse command as JSON: {}", payload);
+                                }
                             }
                         }
                     }
-                    Ok(_) => {} // Ignore non-Publish events (PingResp, SubAck, etc.)
-                    Err(rumqttc::ConnectionError::Io(ref io_err))
-                        if io_err.kind() == std::io::ErrorKind::ConnectionRefused
-                            || io_err.kind() == std::io::ErrorKind::TimedOut =>
-                    {
-                        // Broker not yet available — silently retry
-                        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-                    }
+                    Ok(_) => {} // PingResp, SubAck, etc.
                     Err(e) => {
-                        eprintln!("[caesar.command] MQTT connection error: {:?}. Retrying in 10s.", e);
-                        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                        eprintln!("[caesar.command] MQTT connection lost: {:?}. Reconnecting in {}s.", e, backoff_s);
+                        tokio::time::sleep(std::time::Duration::from_secs(backoff_s)).await;
+                        backoff_s = (backoff_s * 2).min(60);
+                        break; // break inner loop → retry outer connect loop
                     }
                 }
             }
-        } else {
-            eprintln!("[caesar.command] Failed to subscribe to MQTT topic: {}", topic);
         }
     });
+
     // ---------------------------------------------
 
     let _sensor_tasks = spawn_sources(settings.clone(), sensor_bus.clone());
@@ -246,9 +372,33 @@ async fn main() -> Result<()> {
     FusionEngine::spawn(settings.clone(), observation_rx, fused_tx);
 
     let mut published = 0usize;
-    while let Some(track) = fused_rx.recv().await {
-        match signer.sign_track(&settings.node_id, &settings.publish_topic, track) {
+    while let Some(mut track) = fused_rx.recv().await {
+        // ── Drone GPS overlay ─────────────────────────────────────────────────
+        // If a MAVLink reader is active and has a valid GPS fix, override the
+        // static config location with the drone's live position.  Falls back to
+        // the config lat/lon when the reader is not connected or has no fix.
+        if let Some(ref dt) = drone_telem {
+            if let Ok(t) = dt.read() {
+                if t.connected && t.gps_fix >= 2 {
+                    track.geo_latitude  = t.latitude_deg;
+                    track.geo_longitude = t.longitude_deg;
+                }
+            }
+        }
+        // ─────────────────────────────────────────────────────────────────────
+        match signer.sign_track(&settings.node_id, &settings.publish_topic, track.clone()) {
             Ok(envelope) => {
+                // Also publish via zenoh DDS if enabled
+                if let Some(ref dds_bridge) = dds {
+                    if let Err(e) = dds_bridge.publish_track(&track).await {
+                        eprintln!("[caesar.dds] Track publish error: {}", e);
+                    }
+                    if track.threat_level == "high-interest" {
+                        if let Err(e) = dds_bridge.publish_alert(&track).await {
+                            eprintln!("[caesar.dds] Alert publish error: {}", e);
+                        }
+                    }
+                }
                 // Don't exit the node on a single publish failure (e.g. transient TCP drop).
                 // The uplink reconnects on the next call; log and continue.
                 if let Err(e) = uplink.publish(&envelope).await {

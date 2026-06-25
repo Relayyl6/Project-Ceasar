@@ -1,22 +1,3 @@
-# ── AUTO-DEPENDENCY BOOTSTRAP ─────────────────────────────────────────────────
-# Runs before any imports that might be missing. Ensures the server is self-
-# healing: first run on a fresh machine will install what it needs, then boot.
-import sys, subprocess
-
-def _ensure(pkg: str, import_name: str | None = None) -> None:
-    name = import_name or pkg
-    try:
-        __import__(name)
-    except ModuleNotFoundError:
-        print(f"[caesar.boot] Installing missing dependency: {pkg} ...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", pkg, "--quiet"], timeout=120)
-        print(f"[caesar.boot] {pkg} installed successfully.")
-
-_ensure("opencv-python", "cv2")
-_ensure("pillow",        "PIL")
-_ensure("paho-mqtt",     "paho.mqtt.client")
-# ──────────────────────────────────────────────────────────────────────────────
-
 import argparse
 import json
 import mimetypes
@@ -24,6 +5,7 @@ import time
 import struct
 import math
 import threading
+_tls = threading.local()
 from collections import Counter
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -71,6 +53,39 @@ _camera_cap = None          # OpenCV VideoCapture, if available
 _camera_frame_bytes = None  # last JPEG bytes
 _camera_node_id = "local"
 _anomaly_log = []           # recent detection strings
+
+# ── ALERT STATE (for real-time SSE push) ──────────────────────────────────────────
+_hi_path_cache: Path = Path("output/caesar/high_interest.jsonl")  # updated in main()
+
+
+def _check_alerts(hi_path: Path = None) -> dict | None:
+    """
+    Return the last alert dict if a new line has been appended to
+    high_interest.jsonl since the last call, otherwise return None.
+    """
+    path = hi_path if hi_path is not None else _hi_path_cache
+    
+    if not hasattr(_tls, 'last_hi_size'):
+        try:
+            _tls.last_hi_size = path.stat().st_size if path.exists() else 0
+        except OSError:
+            _tls.last_hi_size = 0
+            
+    try:
+        if not path.exists():
+            return None
+        sz = path.stat().st_size
+        if sz <= _tls.last_hi_size:
+            return None
+        _tls.last_hi_size = sz
+        with path.open('r', encoding='utf-8') as fh:
+            lines = [l for l in fh.readlines() if l.strip()]
+        if not lines:
+            return None
+        return json.loads(lines[-1])
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+# ─────────────────────────────────────────────────────────────────────────────────
 
 def _init_camera():
     """Try to open a real webcam via OpenCV. Auto-scans devices, falls back to synthetic frames."""
@@ -188,6 +203,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--learning-plan", default="output/caesar/control_plane/learning_plan.json")
     parser.add_argument("--node-registry", default="output/caesar/control_plane/node_registry.json")
     parser.add_argument("--governance-audit", default="output/caesar/control_plane/governance_audit.jsonl")
+    parser.add_argument("--correlated-tracks", default="output/caesar/correlated_tracks.json",
+                        help="Path to the correlated_tracks.json written by the Rust hub")
+    parser.add_argument("--ast-plan-dir", default="output/caesar/control_plane",
+                        help="Directory where orchestrator writes AST mission plan .json files")
     parser.add_argument("--activity-window-seconds", type=int, default=900)
     parser.add_argument("--journal-scan-limit", type=int, default=2000)
     parser.add_argument("--high-interest-scan-limit", type=int, default=2000)
@@ -196,6 +215,11 @@ def parse_args() -> argparse.Namespace:
                         help="MQTT broker hostname for actuator dispatch (default: localhost)")
     parser.add_argument("--mqtt-broker-port", type=int, default=1883,
                         help="MQTT broker port (default: 1883)")
+    parser.add_argument(
+        '--node-cameras',
+        default='',
+        help='Comma-separated NODE_ID=IP:MJPEG_PORT pairs, e.g. pi-alpha=192.168.1.10:8554,pi-bravo=192.168.1.11:8554'
+    )
     return parser.parse_args()
 
 
@@ -208,12 +232,15 @@ class CaesarConsoleHandler(BaseHTTPRequestHandler):
     learning_plan_path: Path
     node_registry_path: Path
     governance_audit_path: Path
+    correlated_tracks_path: Path
     static_dir: Path
     activity_window_seconds: int
     journal_scan_limit: int
     high_interest_scan_limit: int
     mqtt_broker_host: str   # C5: broker host read from --mqtt-broker, not hardcoded
     mqtt_broker_port: int   #     avoids always sending commands to localhost
+    # FED: base directory that contains fed_contributions/ and global_model.json
+    _control_plane_dir: str
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -239,6 +266,41 @@ class CaesarConsoleHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/governance-audit":
             limit = _safe_limit(parse_qs(parsed.query), "limit", 25)
             return self.write_json(read_jsonl_tail(self.governance_audit_path, limit))
+
+        # ── FEDERATED LEARNING ENDPOINTS ─────────────────────────────────────
+        if parsed.path == '/api/fed/global-model':
+            gm = Path(self._control_plane_dir) / 'global_model.json'
+            data = read_json(gm)  # returns {} if file absent or too large
+            return self.write_json(data or {'version': 0, 'global_thresholds': {}})
+        # ─────────────────────────────────────────────────────────────────────
+
+        # ── MULTI-NODE CORRELATED TRACKS ──────────────────────────────────────
+        if parsed.path == '/api/correlated-tracks':
+            # Returns the cross-node merged track map written by the Rust hub.
+            # Returns {} when the hub has not yet produced the file (first run,
+            # or correlated_tracks_path not set in hub-dev.toml).
+            data = read_json(self.correlated_tracks_path)
+            return self.write_json(data or {})
+        # ─────────────────────────────────────────────────────────────────────
+
+        # ── AST (Adaptive Selective Tilling) PLAN ENDPOINT ────────────────────
+        if parsed.path == '/api/ast-plan':
+            # Returns the AST mission plan for a given field_id.
+            # The orchestrator writes these to --ast-plan-dir/{field_id}.json.
+            qs = parse_qs(parsed.query)
+            field_id = qs.get('field_id', [''])[0]
+            # Sanitise field_id to safe filename chars (same RE as node_id)
+            if not _NODE_ID_RE.match(field_id):
+                self.send_error(HTTPStatus.BAD_REQUEST, 'invalid field_id')
+                return
+            plan_path = Path(getattr(self, '_ast_plan_dir', 'output/caesar/control_plane')) / f'{field_id}.ast.json'
+            data = read_json(plan_path)
+            if not data:
+                self.send_error(HTTPStatus.NOT_FOUND, f'No AST plan for field_id={field_id}')
+                return
+            return self.write_json(data)
+        # ─────────────────────────────────────────────────────────────────────
+
         if parsed.path == "/api/stats":
             stats = build_stats(
                 read_latest(self.latest_path),
@@ -286,6 +348,10 @@ class CaesarConsoleHandler(BaseHTTPRequestHandler):
                 pass  # client closed tab
             return
 
+        if parsed.path == '/api/proxy-camera':
+            node_id = _safe_node_id(parse_qs(parsed.query).get('node', [''])[0])
+            return self._proxy_mjpeg_stream(node_id)
+
         if parsed.path == "/api/anomaly-log":
             limit = _safe_limit(parse_qs(parsed.query), "limit", 20)
             # Auto-populate from live high-interest file if log is sparse
@@ -301,6 +367,8 @@ class CaesarConsoleHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/live-events":
             # Server-Sent Events: push combined stats+latest every 2 s
+            # Iteration 1: also include the newest high-interest alert if a
+            # new line has been appended since the last tick.
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-store")
@@ -319,18 +387,90 @@ class CaesarConsoleHandler(BaseHTTPRequestHandler):
                         self.activity_window_seconds,
                     )
                     latest = read_latest(self.latest_path)
-                    payload = json.dumps({"stats": stats, "latest": latest})
-                    self.wfile.write(f"data: {payload}\r\n\r\n".encode())
-                    
+                    payload: dict = {"stats": stats, "latest": latest}
+
+                    # ── Alert push (Iteration 1) ───────────────────────────────
+                    alert = _check_alerts(self.high_interest_path)
+                    if alert:
+                        payload["latest_alert"] = alert
+                        payload["alert_timestamp"] = time.time()
+                    # ─────────────────────────────────────────────────────────────
+
+                    self.wfile.write(f"data: {json.dumps(payload)}\r\n\r\n".encode())
+
                     ticks += 1
                     if ticks % 7 == 0:
                         # 14-second heartbeat to prevent proxy dead-drops
                         self.wfile.write(b": ping\n\n")
-                        
+
                     self.wfile.flush()
                     time.sleep(2.0)
             except (BrokenPipeError, ConnectionResetError, OSError):
                 pass
+            return
+
+        if parsed.path == "/api/alert-stream":
+            # Dedicated SSE endpoint for alert-only listeners (lower overhead).
+            # Pushes only when a new line is appended to high_interest.jsonl.
+            # Iteration 4: handles file-not-found / OS errors without crashing.
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+            # Per-connection size cursor — independent of the module-level one
+            # so multiple simultaneous listeners each see all new events.
+            local_last_size: int = 0
+            try:
+                while True:
+                    # ── Iteration 4: safe stat ────────────────────────────────
+                    try:
+                        sz = (
+                            self.high_interest_path.stat().st_size
+                            if self.high_interest_path.exists()
+                            else 0
+                        )
+                    except OSError:
+                        sz = 0
+                    # ─────────────────────────────────────────────────────────────
+                    if sz > local_last_size:
+                        # New data appended — read all new lines
+                        try:
+                            with self.high_interest_path.open('r', encoding='utf-8') as fh:
+                                all_lines = [l for l in fh.readlines() if l.strip()]
+                            # Estimate how many bytes the old content was to find new lines.
+                            # Because we only need the freshly-appended ones we re-read
+                            # from the start and skip lines that were already present
+                            # (identified by byte offset tracking is simpler: just send
+                            # all lines whose cumulative size exceeds local_last_size).
+                            new_lines = []
+                            cumulative = 0
+                            for line in all_lines:
+                                line_bytes = len((line + "\n").encode('utf-8'))
+                                if cumulative + line_bytes > local_last_size:
+                                    new_lines.append(line)
+                                cumulative += line_bytes
+                            for raw_line in new_lines:
+                                try:
+                                    alert_obj = json.loads(raw_line)
+                                    self.wfile.write(
+                                        f"event: alert\ndata: {json.dumps(alert_obj)}\n\n".encode()
+                                    )
+                                except (json.JSONDecodeError, ValueError):
+                                    pass  # skip malformed lines
+                            self.wfile.flush()
+                        except (OSError, UnicodeDecodeError):
+                            pass  # file disappeared or encoding error — skip tick
+                        local_last_size = sz
+                    else:
+                        # Send a keepalive comment so the connection stays open
+                        self.wfile.write(b": keepalive\n\n")
+                        self.wfile.flush()
+                    time.sleep(1.0)
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass  # client disconnected
             return
 
         if parsed.path in {"/", "/index.html"}:
@@ -348,6 +488,14 @@ class CaesarConsoleHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path == "/api/actuate":
+            import os
+            expected_token = os.getenv("CAESAR_API_TOKEN")
+            if expected_token:
+                auth_header = self.headers.get("Authorization", "")
+                if not auth_header.startswith("Bearer ") or auth_header.split(" ")[1] != expected_token:
+                    self.send_error(HTTPStatus.UNAUTHORIZED, "Invalid or missing CAESAR_API_TOKEN")
+                    return
+
             # F12 FIX: Handle missing Content-Length gracefully.
             # Security: cap the read at _MAX_POST_BYTES regardless of what the
             # client advertises — prevents a crafted Content-Length from blocking
@@ -399,8 +547,88 @@ class CaesarConsoleHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 self.send_error(HTTPStatus.BAD_REQUEST, str(e))
             return
-            
-        self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+
+        # ── FEDERATED LEARNING ENDPOINTS ─────────────────────────────────────
+        if parsed.path == '/api/fed/contribute':
+            # Edge nodes POST their per-class confidence statistics here.
+            # Security: cap reads at _MAX_POST_BYTES (64 KiB); validate node_id
+            # against _NODE_ID_RE before writing to disk to prevent path traversal.
+            try:
+                raw_cl = self.headers.get('Content-Length')
+                try:
+                    advertised = int(raw_cl) if raw_cl is not None else _MAX_POST_BYTES
+                except (ValueError, OverflowError):
+                    advertised = _MAX_POST_BYTES
+                length = max(0, min(advertised, _MAX_POST_BYTES))
+                body = self.rfile.read(length)
+                payload = json.loads(body.decode('utf-8', errors='replace'))
+                node_id = payload.get('node_id', '')
+                if not node_id or not isinstance(node_id, str) or not _NODE_ID_RE.match(node_id):
+                    self.send_error(HTTPStatus.BAD_REQUEST, 'invalid node_id')
+                    return
+                contrib_dir = Path(self._control_plane_dir) / 'fed_contributions'
+                contrib_dir.mkdir(parents=True, exist_ok=True)
+                out = contrib_dir / f'{node_id}.json'
+                # Atomic write: tmp then rename so the aggregator never reads
+                # a partially-written contribution file.
+                tmp = out.with_suffix('.tmp')
+                tmp.write_text(body.decode('utf-8', errors='replace'), encoding='utf-8')
+                tmp.replace(out)
+                print(f'[caesar.fed.contribute] Accepted contribution from node_id={node_id}')
+                return self.write_json({'status': 'accepted'})
+            except json.JSONDecodeError as e:
+                self.send_error(HTTPStatus.BAD_REQUEST, f'JSON parse error: {e}')
+                return
+            except Exception as e:
+                self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(e))
+                return
+        # ─────────────────────────────────────────────────────────────────────
+        # ─────────────────────────────────────────────────────────────────────
+
+        # ── REMOTE RECONFIGURE ───────────────────────────────────────────────
+        if parsed.path == '/api/reconfigure':
+            # Publish a config patch to a specific node via MQTT.
+            # Only whitelisted fields are accepted to prevent injection attacks.
+            _ALLOWED_PATCH_FIELDS = frozenset({'threat_threshold', 'domain', 'fusion_window_ms', 'anomaly_threshold'})
+            try:
+                raw_cl = self.headers.get('Content-Length')
+                try:
+                    advertised = int(raw_cl) if raw_cl is not None else _MAX_POST_BYTES
+                except (ValueError, OverflowError):
+                    advertised = _MAX_POST_BYTES
+                length = max(0, min(advertised, _MAX_POST_BYTES))
+                body = json.loads(self.rfile.read(length).decode('utf-8', errors='replace'))
+                node_id = body.get('node_id', '')
+                if not node_id or not isinstance(node_id, str) or not _NODE_ID_RE.match(node_id):
+                    self.send_error(HTTPStatus.BAD_REQUEST, 'invalid node_id')
+                    return
+                patch = body.get('patch', {})
+                if not isinstance(patch, dict):
+                    self.send_error(HTTPStatus.BAD_REQUEST, 'patch must be an object')
+                    return
+                sanitized = {k: v for k, v in patch.items() if k in _ALLOWED_PATCH_FIELDS}
+                if not sanitized:
+                    self.send_error(HTTPStatus.BAD_REQUEST,
+                        f'no allowed fields. Allowed: {sorted(_ALLOWED_PATCH_FIELDS)}')
+                    return
+                import paho.mqtt.publish as mqtt_publish
+                mqtt_payload = json.dumps({'type': 'reconfigure', 'patch': sanitized})
+                mqtt_publish.single(
+                    f'caesar/commands/{node_id}',
+                    payload=mqtt_payload,
+                    hostname=self.mqtt_broker_host,
+                    port=self.mqtt_broker_port,
+                    keepalive=5,
+                )
+                return self.write_json({'status': 'patch_sent', 'node_id': node_id, 'applied_fields': sorted(sanitized.keys())})
+            except json.JSONDecodeError as exc:
+                self.send_error(HTTPStatus.BAD_REQUEST, f'JSON parse error: {exc}')
+            except Exception as exc:
+                self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
+            return
+        # ─────────────────────────────────────────────────────────────────────
+
+        self.send_error(HTTPStatus.NOT_FOUND, 'Not found')
 
     def serve_static(self, relative_path: str) -> None:
         safe_path = (self.static_dir / relative_path).resolve()
@@ -424,6 +652,66 @@ class CaesarConsoleHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+
+    def _proxy_mjpeg_stream(self, node_id: str) -> None:
+        """Proxy MJPEG stream from a remote edge node's mjpeg_port to the browser.
+        Falls back to the local camera stream if the node is not reachable."""
+        import urllib.request
+        import urllib.error
+
+        addr = getattr(self, 'node_cameras', {}).get(node_id, '')
+        if addr:
+            try:
+                url = f'http://{addr}/'
+                req = urllib.request.Request(url)
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    ct = resp.headers.get(
+                        'Content-Type',
+                        'multipart/x-mixed-replace; boundary=caesar_frame'
+                    )
+                    self.send_response(200)
+                    self.send_header('Content-Type', ct)
+                    self.send_header('Cache-Control', 'no-cache')
+                    self.send_header('X-Node-ID', node_id)
+                    self.end_headers()
+                    try:
+                        while True:
+                            chunk = resp.read(16384)
+                            if not chunk:
+                                break
+                            self.wfile.write(chunk)
+                            self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError):
+                        pass
+                return
+            except (urllib.error.URLError, OSError) as e:
+                print(
+                    f'[console.proxy] Edge node {node_id} unreachable ({e}), falling back to local camera',
+                    file=__import__('sys').stderr,
+                )
+        # Fall back to local camera stream
+        self._handle_camera_stream(node_id)
+
+    def _handle_camera_stream(self, node_id: str) -> None:
+        """Emit a local MJPEG stream for the given node_id."""
+        self.send_response(HTTPStatus.OK)
+        self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=caesarframe')
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.end_headers()
+        try:
+            while True:
+                jpeg = _grab_frame(node_id)
+                header = (
+                    f'--caesarframe\r\n'
+                    f'Content-Type: image/jpeg\r\n'
+                    f'Content-Length: {len(jpeg)}\r\n\r\n'
+                ).encode()
+                self.wfile.write(header + jpeg + b'\r\n')
+                self.wfile.flush()
+                time.sleep(0.08)  # ~12.5 fps
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
 
 def read_latest(path: Path) -> dict:
@@ -541,6 +829,26 @@ def build_stats(
     )
     last_detection_ms = max((record_time_ms(record) for record in latest_records), default=None)
 
+    # ── Inference latency statistics (from FusedTrack.inference_latency_ms) ────
+    latencies = []
+    for record in latest_records:
+        body = record_body(record)
+        for _modality, lat in (body.get('inference_latency_ms') or {}).items():
+            if isinstance(lat, (int, float)) and lat > 0:
+                latencies.append(lat)
+
+    if latencies:
+        latencies_sorted = sorted(latencies)
+        avg_latency = sum(latencies_sorted) / len(latencies_sorted)
+        p95_idx = max(0, int(len(latencies_sorted) * 0.95) - 1)
+        p95_latency = latencies_sorted[p95_idx]
+        sla_met = sum(1 for l in latencies_sorted if l < 100) / len(latencies_sorted) * 100
+    else:
+        avg_latency = 0.0
+        p95_latency = 0.0
+        sla_met = 100.0
+    # ────────────────────────────────────────────────────────────────────────────
+
     return {
         "activity_window_seconds": activity_window_seconds,
         "active_cutoff_ms": active_cutoff_ms,
@@ -561,6 +869,9 @@ def build_stats(
         "recent_journal_count": len(recent_journal_records),
         "last_detection_ms": last_detection_ms,
         "stale": not latest_records,
+        "avg_inference_latency_ms": round(avg_latency, 1),
+        "p95_inference_latency_ms": round(p95_latency, 1),
+        "sla_sub100ms_pct": round(sla_met, 1),
     }
 
 
@@ -575,12 +886,23 @@ def main() -> int:
     handler.learning_plan_path = Path(args.learning_plan)
     handler.node_registry_path = Path(args.node_registry)
     handler.governance_audit_path = Path(args.governance_audit)
+    handler.correlated_tracks_path = Path(args.correlated_tracks)
     handler.static_dir = Path(__file__).with_name("static")
     handler.activity_window_seconds = args.activity_window_seconds
     handler.journal_scan_limit = args.journal_scan_limit
     handler.high_interest_scan_limit = args.high_interest_scan_limit
     handler.mqtt_broker_host = args.mqtt_broker
     handler.mqtt_broker_port = args.mqtt_broker_port
+    handler.node_cameras = dict(  # NODE_ID -> "IP:PORT" strings
+        item.split('=', 1)
+        for item in args.node_cameras.split(',')
+        if '=' in item
+    )
+    # FED: derive the control-plane dir from --governance-audit path so that
+    # fed_contributions/ and global_model.json end up next to the other files.
+    handler._control_plane_dir = str(Path(args.governance_audit).parent)
+    # AST: directory where orchestrator drops per-field mission plans.
+    handler._ast_plan_dir = args.ast_plan_dir
 
     server = ThreadingHTTPServer((args.host, args.port), handler)
     print(f"Caesar console listening on http://{args.host}:{args.port}")

@@ -58,7 +58,7 @@ ollama pull llava
 # Python environment for hub services
 python3 -m venv .venv-console
 source .venv-console/bin/activate
-pip install paho-mqtt opencv-python pillow requests
+pip install -r requirements-orchestrator.txt -r requirements-console.txt
 
 mkdir -p output/caesar
 ```
@@ -621,12 +621,28 @@ command_args      = ["scripts/radar_adapter.py", "--mode", "hardware",
                      "--port", "/dev/ttyAMA0", "--baud", "256000"]
 ```
 
+```
+
 ---
 
-## 9. Launching the Dashboard Console
+## 9. Launching the Dashboard Console & Agentic Orchestrator
+
+The new Python orchestrator features a ZeroMQ event loop and a Kalman Filter tracking engine that runs concurrently with the federated learning aggregator.
 
 ```bash
 source .venv-console/bin/activate
+
+# Optional: To enable automated voice calls to police/authorities,
+# set your Twilio keys before launching the orchestrator:
+export TWILIO_ACCOUNT_SID="your_account_sid_here"
+export TWILIO_AUTH_TOKEN="your_auth_token_here"
+export TWILIO_PHONE_FROM="+1234567890"
+export AUTHORITIES_PHONE="+0987654321"
+
+# Launch the orchestrator (handles tracking and autonomous dispatch)
+python services/mesh_orchestrator/orchestrator.py &
+
+# Launch the REST/SSE dashboard server
 python services/caesar_console/server.py --host 127.0.0.1 --port 8090
 
 # Open in browser:
@@ -719,16 +735,46 @@ StandardError=journal
 WantedBy=multi-user.target
 ```
 
+### Agentic Orchestrator Service (Hub)
+
+```bash
+sudo nano /etc/systemd/system/caesar-orchestrator.service
+```
+
+```ini
+[Unit]
+Description=Project Caesar Agentic Orchestrator
+After=network.target caesar-hub.service
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/opt/uriel-caesar
+Environment="TWILIO_ACCOUNT_SID=your_account_sid_here"
+Environment="TWILIO_AUTH_TOKEN=your_auth_token_here"
+Environment="TWILIO_PHONE_FROM=+1234567890"
+Environment="AUTHORITIES_PHONE=+0987654321"
+ExecStart=/opt/uriel-caesar/.venv-console/bin/python services/mesh_orchestrator/orchestrator.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+```
+
 ### Enable & Start
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable caesar-hub caesar-remote-infer uriel-edge
-sudo systemctl start  caesar-hub caesar-remote-infer uriel-edge
-sudo systemctl status caesar-hub caesar-remote-infer uriel-edge
+sudo systemctl enable caesar-hub caesar-remote-infer caesar-orchestrator uriel-edge
+sudo systemctl start  caesar-hub caesar-remote-infer caesar-orchestrator uriel-edge
+sudo systemctl status caesar-hub caesar-remote-infer caesar-orchestrator uriel-edge
 
 # Follow logs:
 journalctl -u caesar-hub -f
+journalctl -u caesar-orchestrator -f
 journalctl -u uriel-edge -f
 ```
 
@@ -777,7 +823,7 @@ AI Inference Cascade:
 
 | Domain | AI Detects | Action |
 |--------|-----------|--------|
-| `tactical` | `armed-intruder`, `drone`, `uav` | `lock_perimeter` |
+| `tactical` | `armed-intruder`, `drone`, `uav` | `lock_perimeter` + `dispatch_drone` + `agentic_authority_alert` |
 | `tactical` | anything else | `alert` |
 | `agricultural` | `dry-soil`, `crop-wilt`, `plant-stress` | `increase_flow` |
 | `agricultural` | `flood`, `saturated`, `overwater` | `decrease_flow` |

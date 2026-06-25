@@ -4,3 +4,4 @@ trusted_public_keys = ["3ccd241cffc9b3618044b97d036d8614593d8b017c340f1dee877338
 journal_path = "output/caesar/journal.jsonl"
 latest_path = "output/caesar/latest_tracks.json"
 high_interest_path = "output/caesar/high_interest.jsonl"
+correlated_tracks_path = "output/caesar/correlated_tracks.json"

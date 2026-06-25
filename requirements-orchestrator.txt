@@ -1,0 +1,19 @@
+# Project Caesar — Mesh Orchestrator + FedAggregator dependencies
+# Run: pip install -r requirements-orchestrator.txt
+
+# ZeroMQ event bus
+pyzmq>=25.0
+
+# Multi-camera Kalman tracking
+filterpy>=1.4
+scipy>=1.12
+numpy>=1.26
+
+# Schema validation + command safety
+pydantic>=2.0
+
+# MQTT drone dispatch
+paho-mqtt>=1.6
+
+# Authority alerting (Twilio REST API)
+requests>=2.31

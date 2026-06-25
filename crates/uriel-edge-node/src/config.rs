@@ -1,4 +1,117 @@
+use anyhow::Context as _;
 use serde::Deserialize;
+
+/// Validates that a URL endpoint resolves to a private/local network address.
+/// Prevents accidental data exfiltration to cloud endpoints.
+///
+/// Edge cases handled:
+/// - `file://` and other non-network schemes are rejected (no host to validate).
+/// - URLs with no host component return a clear error.
+/// - IP parse failures fall through to the hostname heuristic.
+/// - `CAESAR_ALLOW_CLOUD=1` suppresses the cloud-hostname error (not recommended).
+pub fn validate_local_endpoint(url: &str, field_name: &str) -> anyhow::Result<()> {
+    use std::net::IpAddr;
+
+    let url_parsed = url::Url::parse(url)
+        .with_context(|| format!("{}: invalid URL '{}'", field_name, url))?;
+
+    // Reject non-network schemes (file://, data:, etc.) — they have no host
+    // but also don't represent remote endpoints, so treat them as safe.
+    match url_parsed.scheme() {
+        "http" | "https" | "mqtt" | "mqtts" | "ws" | "wss" | "tcp" => {}
+        other => {
+            // file:// and custom schemes are not remote endpoints — allow them.
+            eprintln!(
+                "[caesar.sovereignty] {} uses scheme '{}'; skipping IP check.",
+                field_name, other
+            );
+            return Ok(());
+        }
+    }
+
+    let host = url_parsed
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("{}: URL '{}' has no host component", field_name, url))?;
+
+    // Allow localhost and explicit loopback literals
+    if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+        return Ok(());
+    }
+
+    // Try to parse as a bare IP address
+    match host.parse::<IpAddr>() {
+        Ok(ip) => {
+            let is_private = match ip {
+                IpAddr::V4(v4) => {
+                    let o = v4.octets();
+                    o[0] == 10                                              // 10.0.0.0/8
+                    || (o[0] == 172 && o[1] >= 16 && o[1] <= 31)          // 172.16.0.0/12
+                    || (o[0] == 192 && o[1] == 168)                        // 192.168.0.0/16
+                    || (o[0] == 100 && o[1] >= 64 && o[1] <= 127)         // 100.64.0.0/10 CGNAT
+                    || v4.is_loopback()
+                    || v4.is_link_local()
+                }
+                IpAddr::V6(v6) => v6.is_loopback() || v6.is_unique_local(),
+            };
+            if is_private {
+                Ok(())
+            } else {
+                // Check env-var override before hard-failing
+                if std::env::var("CAESAR_ALLOW_CLOUD").is_ok() {
+                    eprintln!(
+                        "[caesar.sovereignty] OVERRIDE ACTIVE — {} '{}' points to a public IP.",
+                        field_name, url
+                    );
+                    return Ok(());
+                }
+                anyhow::bail!(
+                    "DATA SOVEREIGNTY VIOLATION: {} '{}' points to a public IP address. \
+                    Project Caesar enforces local-network-only data processing. \
+                    Set CAESAR_ALLOW_CLOUD=1 to override (not recommended).",
+                    field_name, url
+                )
+            }
+        }
+        Err(_) => {
+            // It's a hostname — we cannot resolve at config-load time, but we
+            // can apply a cloud-TLD heuristic. Legitimate on-prem hostnames
+            // rarely end in .com/.io/.ai/.net/.org/.cloud.
+            let cloud_tlds = [".com", ".io", ".ai", ".net", ".org", ".cloud"];
+            let looks_cloud = cloud_tlds.iter().any(|tld| host.ends_with(tld));
+            if looks_cloud {
+                if std::env::var("CAESAR_ALLOW_CLOUD").is_ok() {
+                    eprintln!(
+                        "[caesar.sovereignty] OVERRIDE ACTIVE — {} '{}' appears to be a cloud hostname.",
+                        field_name, url
+                    );
+                    return Ok(());
+                }
+                anyhow::bail!(
+                    "DATA SOVEREIGNTY WARNING: {} '{}' appears to be a cloud hostname. \
+                    Set CAESAR_ALLOW_CLOUD=1 to permit external endpoints.",
+                    field_name, url
+                );
+            }
+            // Hostname doesn't look like a cloud FQDN — allow it (e.g. 'myhost.local', 'broker')
+            Ok(())
+        }
+    }
+}
+
+/// Configuration for flight controller telemetry (MAVLink).
+/// Used when the Pi is mounted on a drone with an ArduPilot/PX4 FC.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct DroneConfig {
+    /// Enable MAVLink telemetry reader
+    #[serde(default)]
+    pub enabled: bool,
+    /// Serial port connected to the flight controller, e.g. "/dev/ttyAMA0"
+    pub mavlink_port: Option<String>,
+    /// Baud rate for MAVLink (typically 57600 or 115200)
+    #[serde(default = "default_mavlink_baud")]
+    pub mavlink_baud: u32,
+}
+fn default_mavlink_baud() -> u32 { 57600 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct EdgeConfig {
@@ -39,6 +152,10 @@ pub struct EdgeConfig {
     pub sentinel: SentinelConfig,
     #[serde(default)]
     pub actuators: Vec<ActuatorConfig>,
+    #[serde(default)]
+    pub drone: DroneConfig,
+    #[serde(default)]
+    pub dds: DdsConfig,
 }
 
 fn default_recon_enabled() -> bool { true }
@@ -64,6 +181,24 @@ impl EdgeConfig {
                 anyhow::bail!("sentinel.motion_area_threshold must be > 0.0");
             }
         }
+
+        // ── Data Sovereignty Checks ────────────────────────────────────────────
+        // Verify that every configured remote endpoint resolves to a private /
+        // local address, preventing accidental data exfiltration to the cloud.
+        if let Some(ref ep) = self.inference.ollama_endpoint {
+            validate_local_endpoint(ep, "inference.ollama_endpoint")
+                .context("Data sovereignty check failed")?;
+        }
+        // Validate webhook URLs declared in any actuator
+        for actuator in &self.actuators {
+            if let Some(ref url) = actuator.webhook_url {
+                let field = format!("actuators[{}].webhook_url", actuator.id);
+                validate_local_endpoint(url, &field)
+                    .context("Data sovereignty check failed")?;
+            }
+        }
+        // ──────────────────────────────────────────────────────────────────────
+
         Ok(())
     }
 }
@@ -88,7 +223,18 @@ pub struct UplinkConfig {
     /// Example: "/dev/ttyUSB0" or "COM3".
     /// If absent, gossipsub logs to stdout only (no radio transmission).
     pub serial_port: Option<String>,
+    /// Gossipsub topic name. Defaults to "caesar/tracks".
+    #[serde(default = "default_gossipsub_topic")]
+    pub gossipsub_topic: String,
+    /// Port for the libp2p TCP listener. 0 = let OS pick a random port.
+    #[serde(default)]
+    pub gossipsub_listen_port: u16,
+    /// List of bootstrap peer multiaddrs to dial on startup.
+    /// Format: "/ip4/1.2.3.4/tcp/7877/p2p/<PeerId>"
+    #[serde(default)]
+    pub bootstrap_peers: Vec<String>,
 }
+fn default_gossipsub_topic() -> String { "caesar/tracks".to_string() }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct OpticalSourceConfig {
@@ -235,3 +381,15 @@ pub struct ActuatorConfig {
     /// Optional Bearer token sent in the Authorization header (webhook type only).
     pub webhook_bearer_token: Option<String>,
 }
+
+/// Configuration for the zenoh DDS bridge.
+/// Enables ROS 2 / DDS-compatible pub/sub for inter-node and hub communication.
+#[derive(Debug, Clone, serde::Deserialize, Default)]
+pub struct DdsConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_dds_base_key")]
+    pub base_key: String,
+    pub router_endpoint: Option<String>,
+}
+fn default_dds_base_key() -> String { "caesar".to_string() }

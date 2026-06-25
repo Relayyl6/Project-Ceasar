@@ -8,7 +8,7 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│  HARDWARE LAYER  (Raspberry Pi 5 / Jetson Orin / STM32 co-proc)     │
+│  HARDWARE LAYER  (Raspberry Pi 3 / Jetson Orin / STM32 co-proc)     │
 │  CSI Camera · LD2450 Radar (UART) · MLX90640 Thermal (I2C)          │
 │  RTL-SDR (USB) · MEMS Mic (I2S/ALSA) · RFD900x LoRa Modem (UART)    │
 └──────────────────────────┬──────────────────────────────────────────┘
@@ -385,6 +385,32 @@ rtl_test   # confirm device
 
 ### 7. RFD900x LoRa Modem (UART uplink)
 Connect via USB-to-UART adapter. Set uplink `mode = "gossipsub"`. The node auto-scans all serial ports and writes at 57600 baud.
+
+### 8. Autonomous Drone Intercept (MAVLink)
+**Use case:** Dispatch an autonomous drone to intercept a CRITICAL threat automatically.
+1. Mount a Raspberry Pi running the `uriel-edge-node` to the drone.
+2. Connect the Pi's UART pins (TX/RX) to the Pixhawk Flight Controller's `TELEM2` port.
+3. Configure `drone_port = "/dev/ttyAMA0"` in your configuration.
+4. When the orchestrator dispatches a drone, the edge node will instantly translate the digital command into a `SET_POSITION_TARGET_GLOBAL_INT` MAVLink hardware command to move the drone to the predicted coordinates.
+*Warning: Ensure the drone is outdoors with GPS lock and in GUIDED mode before testing.*
+
+---
+
+## Agentic Authorities Alert (Twilio)
+
+Project Caesar features an autonomous threat escalation engine. When the tracker confirms a `CRITICAL` threat (like an armed intruder), the Orchestrator will instantly trigger a Python webhook that dials the authorities.
+
+**Setup Instructions:**
+1. Open `services/mesh_orchestrator/alerts.py`.
+2. Locate the `AgenticAlerter` configuration block at the top.
+3. Uncomment the environmental variables or paste in your Twilio keys:
+```python
+self.twilio_account_sid = os.getenv("TWILIO_ACCOUNT_SID", "your_account_sid_here")
+self.twilio_auth_token  = os.getenv("TWILIO_AUTH_TOKEN", "your_auth_token_here")
+self.twilio_phone_from  = os.getenv("TWILIO_PHONE_FROM", "+1234567890")
+self.authorities_phone  = os.getenv("AUTHORITIES_PHONE", "+0987654321")
+```
+4. Once configured, the orchestrator will automatically generate a Text-to-Speech (TTS) script with the exact GPS coordinates and initiate the phone call. A 5-minute cool-down per threat type is enforced to prevent spamming.
 
 ---
 

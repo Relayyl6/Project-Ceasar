@@ -12,6 +12,8 @@ serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 tokio.workspace = true
+libp2p.workspace = true
+futures = "0.3"
 uriel-caesar-core = { path = "../uriel-caesar-core" }
 ort.workspace = true
 ndarray.workspace = true
@@ -21,6 +23,13 @@ reqwest = { version = "0.13.3", features = ["json"] }
 serialport = "4.9.0"
 nusb = "0.2.3"
 rumqttc = "0.25.1"
+url.workspace = true
+mavlink = { workspace = true, optional = true }
+zenoh = { workspace = true, optional = true }
+lazy_static = "1.5.0"
+[features]
+mavlink = ["dep:mavlink"]
+dds = ["dep:zenoh"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 pcap = "2.1.1"
