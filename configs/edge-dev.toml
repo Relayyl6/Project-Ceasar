@@ -57,7 +57,8 @@ vocabulary       = [
   "human intruder", "armed person", "civilian drone", "military drone",
   "tractor", "truck", "motorcycle", "car", "animal",
   "fire", "smoke", "explosion", "weapon", "backpack",
-  "person running", "person crouching", "crowd", "vehicle convoy"
+  "person running", "person crouching", "crowd", "vehicle convoy",
+  "knife", "blade"
 ]
 ollama_endpoint  = "http://localhost:11434"
 ollama_model     = "llava"

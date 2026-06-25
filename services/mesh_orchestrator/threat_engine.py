@@ -34,7 +34,7 @@ class ThreatClassifier:
                 
             if "person" in label or "human" in label or "intruder" in label:
                 has_human = True
-            if "gun" in label or "armed" in label or "weapon" in label or "rifle" in label:
+            if any(w in label for w in ["gun", "armed", "weapon", "rifle", "knife", "blade", "machete", "sword"]):
                 has_weapon = True
 
         new_level = "monitor"
